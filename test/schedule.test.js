@@ -78,7 +78,7 @@ test("一覧（これから・過去・月）と編集・中止・削除", async
   assert.equal((await admin.post(`/events/${a.id}/restore`)).body.event.status, "scheduled");
 
   // 試合結果が紐づく予定は削除できない
-  t.db.run("INSERT INTO games(event_id, season, date, opponent, created_at, updated_at) VALUES(?, 2026, ?, 'x', 0, 0)", b.id, b.date);
+  await t.db.run("INSERT INTO games(event_id, season, date, opponent, created_at, updated_at) VALUES(?, 2026, ?, 'x', 0, 0)", b.id, b.date);
   assert.equal((await admin.del(`/events/${b.id}`)).status, 409);
   assert.equal((await taro.get(`/events/${b.id}`)).body.game_id, 1);
   assert.equal((await taro.del(`/events/${a.id}`)).status, 403);

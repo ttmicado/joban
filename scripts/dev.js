@@ -68,6 +68,9 @@ function serveStatic(req, res) {
   fs.createReadStream(file).pipe(res);
 }
 
+// 開発中に await し忘れた Promise の失敗でサーバーごと落ちないように
+process.on("unhandledRejection", (err) => console.error("unhandledRejection", err));
+
 const env = loadEnv();
 const server = createServer({ env, db: await makeDb(env) });
 const port = Number(arg("port", env.PORT || 3000));

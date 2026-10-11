@@ -11,8 +11,8 @@ const RSVP = ["yes", "maybe", "no"];
 
 // ---------------------------------------------------------------- 予定
 
-function getEvent(db, id) {
-  const e = db.one("SELECT * FROM events WHERE id = ?", Number(id));
+async function getEvent(db, id) {
+  const e = await db.one("SELECT * FROM events WHERE id = ?", Number(id));
   if (!e) throw notFound("予定が見つかりません");
   return e;
 }
@@ -51,10 +51,10 @@ function checkEvent(e) {
   if (!e.title) e.title = suggestTitle(e.type, e.opponent);
 }
 
-function insertEvent(c, f) {
+async function insertEvent(c, f) {
   const e = { type: "game", title: null, ...f };
   checkEvent(e);
-  const { lastId } = c.db.run(
+  const { lastId } = await c.db.run(
     `INSERT INTO events(type, title, date, meet_time, start_time, end_time, venue, venue_url, meet_place, opponent,
        belongings, note, rsvp_deadline, created_by, created_at, updated_at)
      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -75,14 +75,14 @@ function insertEvent(c, f) {
     c.now.ts,
     c.now.ts,
   );
-  return getEvent(c.db, lastId);
+  return await getEvent(c.db, lastId);
 }
 
 // 予定ごとの出欠数（アクティブなメンバーだけ数える）
-function countsFor(db, ids) {
+async function countsFor(db, ids) {
   const out = new Map(ids.map((id) => [id, { yes: 0, maybe: 0, no: 0 }]));
   if (!ids.length) return out;
-  const rows = db.all(
+  const rows = await db.all(
     `SELECT a.event_id, a.status, COUNT(*) AS n FROM attendance a JOIN members m ON m.id = a.member_id
      WHERE m.active = 1 AND a.event_id IN (${ids.map(() => "?").join(",")}) GROUP BY a.event_id, a.status`,
     ...ids,
@@ -91,35 +91,35 @@ function countsFor(db, ids) {
   return out;
 }
 
-function listEvents(c, where, params, order, limit = 200) {
-  const rows = c.db.all(`SELECT * FROM events WHERE ${where} ORDER BY ${order} LIMIT ${limit}`, ...params);
+async function listEvents(c, where, params, order, limit = 200) {
+  const rows = await c.db.all(`SELECT * FROM events WHERE ${where} ORDER BY ${order} LIMIT ${limit}`, ...params);
   const ids = rows.map((r) => r.id);
-  const counts = countsFor(c.db, ids);
+  const counts = await countsFor(c.db, ids);
   const mine = new Map();
   const games = new Map();
   if (ids.length) {
     const qs = ids.map(() => "?").join(",");
-    for (const a of c.db.all(`SELECT event_id, status FROM attendance WHERE member_id = ? AND event_id IN (${qs})`, c.member.id, ...ids)) {
+    for (const a of await c.db.all(`SELECT event_id, status FROM attendance WHERE member_id = ? AND event_id IN (${qs})`, c.member.id, ...ids)) {
       mine.set(a.event_id, a.status);
     }
-    for (const g of c.db.all(`SELECT id, event_id FROM games WHERE event_id IN (${qs}) ORDER BY id`, ...ids)) {
+    for (const g of await c.db.all(`SELECT id, event_id FROM games WHERE event_id IN (${qs}) ORDER BY id`, ...ids)) {
       if (!games.has(g.event_id)) games.set(g.event_id, g.id);
     }
   }
   return rows.map((r) => ({ ...r, counts: counts.get(r.id), my_status: mine.get(r.id) || null, game_id: games.get(r.id) || null }));
 }
 
-const activeRoster = (db) =>
-  db.all(
+const activeRoster = async (db) =>
+  await db.all(
     `SELECT * FROM members WHERE active = 1
-     ORDER BY is_guest, CASE WHEN number GLOB '[0-9]*' THEN CAST(number AS BIGINT) ELSE 9999 END, id`,
+     ORDER BY is_guest, CASE WHEN number ~ '^[0-9]+$' THEN CAST(number AS BIGINT) ELSE 9999 END, id`,
   );
 
 // 予定の詳細（出欠一覧・自分の出欠・関連する試合）
-function eventDetail(c, id) {
-  const event = getEvent(c.db, id);
-  const roster = activeRoster(c.db);
-  const att = new Map(c.db.all("SELECT * FROM attendance WHERE event_id = ?", event.id).map((a) => [a.member_id, a]));
+async function eventDetail(c, id) {
+  const event = await getEvent(c.db, id);
+  const roster = await activeRoster(c.db);
+  const att = new Map((await c.db.all("SELECT * FROM attendance WHERE event_id = ?", event.id)).map((a) => [a.member_id, a]));
   const attendance = [];
   const unanswered = [];
   for (const m of roster) {
@@ -131,8 +131,8 @@ function eventDetail(c, id) {
   const counts = { yes: 0, maybe: 0, no: 0 };
   for (const a of attendance) counts[a.status]++;
   const mine = att.get(c.member.id);
-  const game = c.db.one("SELECT id FROM games WHERE event_id = ? ORDER BY id LIMIT 1", event.id);
-  const venue = event.venue ? c.db.one("SELECT * FROM venues WHERE name = ?", event.venue) : null;
+  const game = await c.db.one("SELECT id FROM games WHERE event_id = ? ORDER BY id LIMIT 1", event.id);
+  const venue = event.venue ? await c.db.one("SELECT * FROM venues WHERE name = ?", event.venue) : null;
   return {
     event: { ...event, counts },
     attendance,
@@ -144,20 +144,20 @@ function eventDetail(c, id) {
   };
 }
 
-function setRsvp(c) {
-  const event = getEvent(c.db, c.params.id);
+async function setRsvp(c) {
+  const event = await getEvent(c.db, c.params.id);
   const memberId = c.body.member_id !== undefined && c.body.member_id !== null && c.body.member_id !== "" ? v.int(c.body.member_id, "メンバー", { min: 1 }) : c.member.id;
   c.requireAdminOrSelf(memberId);
-  const target = c.db.one("SELECT * FROM members WHERE id = ? AND active = 1", memberId);
+  const target = await c.db.one("SELECT * FROM members WHERE id = ? AND active = 1", memberId);
   if (!target) throw notFound("メンバーが見つかりません");
   if (event.status === "canceled") throw badRequest("この予定は中止になりました");
   if (!c.isAdmin && event.date < c.now.date) throw badRequest("終わった予定の出欠は変更できません");
   const comment = v.str(c.body.comment, "コメント", { max: 100 });
   if (c.body.status === null || c.body.status === "" || c.body.status === "none") {
-    c.db.run("DELETE FROM attendance WHERE event_id = ? AND member_id = ?", event.id, memberId);
+    await c.db.run("DELETE FROM attendance WHERE event_id = ? AND member_id = ?", event.id, memberId);
   } else {
     const status = v.oneOf(c.body.status, "出欠", RSVP, { required: true });
-    c.db.run(
+    await c.db.run(
       `INSERT INTO attendance(event_id, member_id, status, comment, updated_at) VALUES(?, ?, ?, ?, ?)
        ON CONFLICT(event_id, member_id) DO UPDATE SET status = excluded.status, comment = excluded.comment, updated_at = excluded.updated_at`,
       event.id,
@@ -167,37 +167,37 @@ function setRsvp(c) {
       c.now.ts,
     );
   }
-  return eventDetail(c, event.id);
+  return await eventDetail(c, event.id);
 }
 
-function updateEvent(c) {
-  const before = getEvent(c.db, c.params.id);
+async function updateEvent(c) {
+  const before = await getEvent(c.db, c.params.id);
   const f = eventFields(c.body, { partial: true });
   const next = { ...before, ...f };
   checkEvent(next); // タイトルが空なら種類・相手から自動提案
   f.title = next.title;
   const keys = Object.keys(f);
-  c.db.run(
+  await c.db.run(
     `UPDATE events SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
     ...keys.map((k) => f[k]),
     c.now.ts,
     before.id,
   );
-  const event = getEvent(c.db, before.id);
+  const event = await getEvent(c.db, before.id);
   c.emit("event.updated", { event, before });
   return { event };
 }
 
 // 自分の未回答（これからの予定 + 受付中の日程調整）
-function pending(c) {
-  const events = c.db.all(
+async function pending(c) {
+  const events = await c.db.all(
     `SELECT e.* FROM events e WHERE e.date >= ? AND e.status = 'scheduled'
        AND NOT EXISTS (SELECT 1 FROM attendance a WHERE a.event_id = e.id AND a.member_id = ?)
      ORDER BY e.date, COALESCE(e.meet_time, e.start_time, '99:99'), e.id`,
     c.now.date,
     c.member.id,
   );
-  const polls = c.db.all(
+  const polls = await c.db.all(
     `SELECT p.* FROM polls p WHERE p.status = 'open' AND (p.deadline IS NULL OR p.deadline >= ?)
        AND NOT EXISTS (SELECT 1 FROM poll_answers x WHERE x.poll_id = p.id AND x.member_id = ?)
      ORDER BY p.deadline IS NULL, p.deadline, p.id`,
@@ -218,21 +218,21 @@ function venueFields(body) {
   };
 }
 
-function getVenue(db, id) {
-  const r = db.one("SELECT * FROM venues WHERE id = ?", Number(id));
+async function getVenue(db, id) {
+  const r = await db.one("SELECT * FROM venues WHERE id = ?", Number(id));
   if (!r) throw notFound("球場が見つかりません");
   return r;
 }
 
 // ---------------------------------------------------------------- 日程調整
 
-function getPoll(db, id) {
-  const p = db.one("SELECT * FROM polls WHERE id = ?", Number(id));
+async function getPoll(db, id) {
+  const p = await db.one("SELECT * FROM polls WHERE id = ?", Number(id));
   if (!p) throw notFound("日程調整が見つかりません");
   return p;
 }
 
-const pollOptions = (db, pollId) => db.all("SELECT * FROM poll_options WHERE poll_id = ? ORDER BY sort, date, time, id", pollId);
+const pollOptions = async (db, pollId) => await db.all("SELECT * FROM poll_options WHERE poll_id = ? ORDER BY sort, date, time NULLS FIRST, id", pollId);
 
 function optionFields(list) {
   if (!Array.isArray(list) || !list.length) throw badRequest("候補日を1つ以上入れてください");
@@ -247,12 +247,12 @@ function optionFields(list) {
   return out;
 }
 
-function pollDetail(c, id) {
-  const poll = getPoll(c.db, id);
-  const options = pollOptions(c.db, poll.id).map((o) => ({ ...o, counts: { yes: 0, maybe: 0, no: 0 } }));
+async function pollDetail(c, id) {
+  const poll = await getPoll(c.db, id);
+  const options = (await pollOptions(c.db, poll.id)).map((o) => ({ ...o, counts: { yes: 0, maybe: 0, no: 0 } }));
   const byId = new Map(options.map((o) => [o.id, o]));
-  const roster = activeRoster(c.db);
-  const ans = new Map(c.db.all("SELECT * FROM poll_answers WHERE poll_id = ?", poll.id).map((a) => [a.member_id, a]));
+  const roster = await activeRoster(c.db);
+  const ans = new Map((await c.db.all("SELECT * FROM poll_answers WHERE poll_id = ?", poll.id)).map((a) => [a.member_id, a]));
   const answers = [];
   const unanswered = [];
   for (const m of roster) {
@@ -465,42 +465,42 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     [
       "GET",
       "/events",
-      (c) => {
+      async (c) => {
         const range = v.oneOf(c.query.range, "表示範囲", ["upcoming", "past", "month"]) || "upcoming";
         if (range === "month") {
           const month = c.query.month || c.now.date.slice(0, 7);
           if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw badRequest("月の形式が不正です");
-          return { events: listEvents(c, "date LIKE ?", [`${month}-%`], "date, COALESCE(meet_time, start_time, '99:99'), id"), month, today: c.now.date };
+          return { events: await listEvents(c, "date LIKE ?", [`${month}-%`], "date, COALESCE(meet_time, start_time, '99:99'), id"), month, today: c.now.date };
         }
         if (range === "past") {
           const limit = v.int(c.query.limit, "件数", { min: 1, max: 500 }) || 100;
-          return { events: listEvents(c, "date < ?", [c.now.date], "date DESC, COALESCE(meet_time, start_time, '99:99') DESC, id DESC", limit), today: c.now.date };
+          return { events: await listEvents(c, "date < ?", [c.now.date], "date DESC, COALESCE(meet_time, start_time, '99:99') DESC, id DESC", limit), today: c.now.date };
         }
-        return { events: listEvents(c, "date >= ?", [c.now.date], "date, COALESCE(meet_time, start_time, '99:99'), id"), today: c.now.date };
+        return { events: await listEvents(c, "date >= ?", [c.now.date], "date, COALESCE(meet_time, start_time, '99:99'), id"), today: c.now.date };
       },
     ],
     ["GET", "/events/pending", pending],
     [
       "GET",
       "/events/next",
-      (c) => {
-        const e = c.db.one(
+      async (c) => {
+        const e = await c.db.one(
           `SELECT id FROM events WHERE date >= ? AND status = 'scheduled'
            ORDER BY date, COALESCE(meet_time, start_time, '99:99'), id LIMIT 1`,
           c.now.date,
         );
-        return e ? eventDetail(c, e.id) : { event: null, today: c.now.date };
+        return e ? await eventDetail(c, e.id) : { event: null, today: c.now.date };
       },
     ],
     // 「前回の予定をコピー」用: 種類ごとに最後に作った予定（中止は後回し）
     [
       "GET",
       "/events/latest",
-      (c) => {
+      async (c) => {
         const type = v.oneOf(c.query.type, "種類", TYPES);
         const e = type
-          ? c.db.one("SELECT * FROM events WHERE type = ? ORDER BY status = 'canceled', created_at DESC, id DESC LIMIT 1", type)
-          : c.db.one("SELECT * FROM events ORDER BY status = 'canceled', created_at DESC, id DESC LIMIT 1");
+          ? await c.db.one("SELECT * FROM events WHERE type = ? ORDER BY status = 'canceled', created_at DESC, id DESC LIMIT 1", type)
+          : await c.db.one("SELECT * FROM events ORDER BY status = 'canceled', created_at DESC, id DESC LIMIT 1");
         return { event: e || null };
       },
       { auth: "admin" },
@@ -509,8 +509,8 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     [
       "POST",
       "/events",
-      (c) => {
-        const event = insertEvent(c, eventFields(c.body));
+      async (c) => {
+        const event = await insertEvent(c, eventFields(c.body));
         c.emit("event.created", { event });
         return { event };
       },
@@ -520,11 +520,11 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     [
       "POST",
       "/events/:id/cancel",
-      (c) => {
-        const before = getEvent(c.db, c.params.id);
+      async (c) => {
+        const before = await getEvent(c.db, c.params.id);
         if (before.status === "canceled") return { event: before };
-        c.db.run("UPDATE events SET status = 'canceled', updated_at = ? WHERE id = ?", c.now.ts, before.id);
-        const event = getEvent(c.db, before.id);
+        await c.db.run("UPDATE events SET status = 'canceled', updated_at = ? WHERE id = ?", c.now.ts, before.id);
+        const event = await getEvent(c.db, before.id);
         c.emit("event.canceled", { event });
         return { event };
       },
@@ -534,11 +534,11 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     [
       "POST",
       "/events/:id/restore",
-      (c) => {
-        const before = getEvent(c.db, c.params.id);
+      async (c) => {
+        const before = await getEvent(c.db, c.params.id);
         if (before.status !== "canceled") return { event: before };
-        c.db.run("UPDATE events SET status = 'scheduled', updated_at = ? WHERE id = ?", c.now.ts, before.id);
-        const event = getEvent(c.db, before.id);
+        await c.db.run("UPDATE events SET status = 'scheduled', updated_at = ? WHERE id = ?", c.now.ts, before.id);
+        const event = await getEvent(c.db, before.id);
         c.emit("event.updated", { event, before });
         return { event };
       },
@@ -547,18 +547,18 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     [
       "DELETE",
       "/events/:id",
-      (c) => {
-        const e = getEvent(c.db, c.params.id);
-        if (c.db.one("SELECT id FROM games WHERE event_id = ? LIMIT 1", e.id)) {
+      async (c) => {
+        const e = await getEvent(c.db, c.params.id);
+        if (await c.db.one("SELECT id FROM games WHERE event_id = ? LIMIT 1", e.id)) {
           throw conflict("試合結果が登録されている予定は削除できません。中止にしてください");
         }
-        const hasWakeups = !!c.db.one("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wakeups'");
-        c.db.tx(() => {
-          c.db.run("DELETE FROM attendance WHERE event_id = ?", e.id);
+        const hasWakeups = !!(await c.db.one("SELECT to_regclass('wakeups') AS t")).t;
+        await c.db.tx(async () => {
+          await c.db.run("DELETE FROM attendance WHERE event_id = ?", e.id);
           // 起床報告（community 機能）も一緒に消す
-          if (hasWakeups) c.db.run("DELETE FROM wakeups WHERE event_id = ?", e.id);
-          c.db.run("DELETE FROM events WHERE id = ?", e.id);
-          c.db.run("UPDATE polls SET event_id = NULL WHERE event_id = ?", e.id);
+          if (hasWakeups) await c.db.run("DELETE FROM wakeups WHERE event_id = ?", e.id);
+          await c.db.run("DELETE FROM events WHERE id = ?", e.id);
+          await c.db.run("UPDATE polls SET event_id = NULL WHERE event_id = ?", e.id);
         });
         return { ok: true };
       },
@@ -567,14 +567,14 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     ["PUT", "/events/:id/rsvp", setRsvp],
 
     // ---------------- 球場
-    ["GET", "/venues", (c) => ({ venues: c.db.all("SELECT * FROM venues ORDER BY name") })],
+    ["GET", "/venues", async (c) => ({ venues: await c.db.all("SELECT * FROM venues ORDER BY name") })],
     [
       "POST",
       "/venues",
-      (c) => {
+      async (c) => {
         const f = venueFields(c.body);
-        if (c.db.one("SELECT id FROM venues WHERE name = ?", f.name)) throw conflict("同じ名前の球場がすでにあります");
-        const { lastId } = c.db.run(
+        if (await c.db.one("SELECT id FROM venues WHERE name = ?", f.name)) throw conflict("同じ名前の球場がすでにあります");
+        const { lastId } = await c.db.run(
           "INSERT INTO venues(name, address, url, note, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
           f.name,
           f.address,
@@ -583,18 +583,18 @@ CREATE TABLE IF NOT EXISTS poll_answers (
           c.now.ts,
           c.now.ts,
         );
-        return { venue: getVenue(c.db, lastId) };
+        return { venue: await getVenue(c.db, lastId) };
       },
       { auth: "admin" },
     ],
     [
       "PATCH",
       "/venues/:id",
-      (c) => {
-        const cur = getVenue(c.db, c.params.id);
+      async (c) => {
+        const cur = await getVenue(c.db, c.params.id);
         const f = venueFields({ ...cur, ...c.body });
-        if (c.db.one("SELECT id FROM venues WHERE name = ? AND id != ?", f.name, cur.id)) throw conflict("同じ名前の球場がすでにあります");
-        c.db.run(
+        if (await c.db.one("SELECT id FROM venues WHERE name = ? AND id != ?", f.name, cur.id)) throw conflict("同じ名前の球場がすでにあります");
+        await c.db.run(
           "UPDATE venues SET name = ?, address = ?, url = ?, note = ?, updated_at = ? WHERE id = ?",
           f.name,
           f.address,
@@ -603,16 +603,16 @@ CREATE TABLE IF NOT EXISTS poll_answers (
           c.now.ts,
           cur.id,
         );
-        return { venue: getVenue(c.db, cur.id) };
+        return { venue: await getVenue(c.db, cur.id) };
       },
       { auth: "admin" },
     ],
     [
       "DELETE",
       "/venues/:id",
-      (c) => {
-        const cur = getVenue(c.db, c.params.id);
-        c.db.run("DELETE FROM venues WHERE id = ?", cur.id);
+      async (c) => {
+        const cur = await getVenue(c.db, c.params.id);
+        await c.db.run("DELETE FROM venues WHERE id = ?", cur.id);
         return { ok: true };
       },
       { auth: "admin" },
@@ -622,8 +622,8 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     [
       "GET",
       "/polls",
-      (c) => {
-        const rows = c.db.all(
+      async (c) => {
+        const rows = await c.db.all(
           `SELECT p.*,
              (SELECT COUNT(*) FROM poll_options o WHERE o.poll_id = p.id) AS option_count,
              (SELECT COUNT(*) FROM poll_answers x JOIN members m ON m.id = x.member_id WHERE x.poll_id = p.id AND m.active = 1) AS answer_count,
@@ -633,7 +633,7 @@ CREATE TABLE IF NOT EXISTS poll_answers (
            FROM polls p ORDER BY p.status = 'open' DESC, p.created_at DESC LIMIT 100`,
           c.member.id,
         );
-        const memberCount = c.db.one("SELECT COUNT(*) AS n FROM members WHERE active = 1 AND is_guest = 0").n;
+        const memberCount = (await c.db.one("SELECT COUNT(*) AS n FROM members WHERE active = 1 AND is_guest = 0")).n;
         return { polls: rows.map((p) => ({ ...p, answered: !!p.answered })), member_count: memberCount, today: c.now.date };
       },
     ],
@@ -641,13 +641,13 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     [
       "POST",
       "/polls",
-      (c) => {
+      async (c) => {
         const title = v.str(c.body.title, "タイトル", { max: 60, required: true });
         const note = v.str(c.body.note, "メモ", { max: 1000 });
         const deadline = v.date(c.body.deadline, "締切");
         const opts = optionFields(c.body.options);
-        const id = c.db.tx(() => {
-          const { lastId } = c.db.run(
+        const id = await c.db.tx(async () => {
+          const { lastId } = await c.db.run(
             "INSERT INTO polls(title, note, deadline, created_by, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
             title,
             note,
@@ -656,13 +656,13 @@ CREATE TABLE IF NOT EXISTS poll_answers (
             c.now.ts,
             c.now.ts,
           );
-          opts.forEach((o, i) =>
-            c.db.run("INSERT INTO poll_options(poll_id, date, time, note, sort) VALUES(?, ?, ?, ?, ?)", lastId, o.date, o.time, o.note, i),
-          );
+          for (const [i, o] of opts.entries()) {
+            await c.db.run("INSERT INTO poll_options(poll_id, date, time, note, sort) VALUES(?, ?, ?, ?, ?)", lastId, o.date, o.time, o.note, i);
+          }
           return lastId;
         });
-        const poll = getPoll(c.db, id);
-        const options = pollOptions(c.db, id);
+        const poll = await getPoll(c.db, id);
+        const options = await pollOptions(c.db, id);
         c.emit("poll.created", { poll, options });
         return { poll, options };
       },
@@ -671,8 +671,8 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     [
       "PATCH",
       "/polls/:id",
-      (c) => {
-        const p = getPoll(c.db, c.params.id);
+      async (c) => {
+        const p = await getPoll(c.db, c.params.id);
         const f = {};
         if (c.body.title !== undefined) f.title = v.str(c.body.title, "タイトル", { max: 60, required: true });
         if (c.body.note !== undefined) f.note = v.str(c.body.note, "メモ", { max: 1000 });
@@ -683,21 +683,21 @@ CREATE TABLE IF NOT EXISTS poll_answers (
         }
         const keys = Object.keys(f);
         if (keys.length) {
-          c.db.run(`UPDATE polls SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`, ...keys.map((k) => f[k]), c.now.ts, p.id);
+          await c.db.run(`UPDATE polls SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`, ...keys.map((k) => f[k]), c.now.ts, p.id);
         }
-        return pollDetail(c, p.id);
+        return await pollDetail(c, p.id);
       },
       { auth: "admin" },
     ],
     [
       "DELETE",
       "/polls/:id",
-      (c) => {
-        const p = getPoll(c.db, c.params.id);
-        c.db.tx(() => {
-          c.db.run("DELETE FROM poll_answers WHERE poll_id = ?", p.id);
-          c.db.run("DELETE FROM poll_options WHERE poll_id = ?", p.id);
-          c.db.run("DELETE FROM polls WHERE id = ?", p.id);
+      async (c) => {
+        const p = await getPoll(c.db, c.params.id);
+        await c.db.tx(async () => {
+          await c.db.run("DELETE FROM poll_answers WHERE poll_id = ?", p.id);
+          await c.db.run("DELETE FROM poll_options WHERE poll_id = ?", p.id);
+          await c.db.run("DELETE FROM polls WHERE id = ?", p.id);
         });
         return { ok: true };
       },
@@ -706,14 +706,14 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     [
       "PUT",
       "/polls/:id/answer",
-      (c) => {
-        const p = getPoll(c.db, c.params.id);
+      async (c) => {
+        const p = await getPoll(c.db, c.params.id);
         const memberId = c.body.member_id ? v.int(c.body.member_id, "メンバー", { min: 1 }) : c.member.id;
         c.requireAdminOrSelf(memberId);
-        if (!c.db.one("SELECT id FROM members WHERE id = ? AND active = 1", memberId)) throw notFound("メンバーが見つかりません");
+        if (!await c.db.one("SELECT id FROM members WHERE id = ? AND active = 1", memberId)) throw notFound("メンバーが見つかりません");
         if (p.status !== "open") throw badRequest("この日程調整は締め切られました");
         if (!c.isAdmin && p.deadline && p.deadline < c.now.date) throw badRequest("回答の締切を過ぎています");
-        const options = pollOptions(c.db, p.id);
+        const options = await pollOptions(c.db, p.id);
         const input = c.body.answers && typeof c.body.answers === "object" ? c.body.answers : {};
         const answers = {};
         for (const o of options) {
@@ -725,7 +725,7 @@ CREATE TABLE IF NOT EXISTS poll_answers (
         }
         if (!Object.keys(answers).length) throw badRequest("どれか1つは ○△× を選んでください");
         const comment = v.str(c.body.comment, "コメント", { max: 100 });
-        c.db.run(
+        await c.db.run(
           `INSERT INTO poll_answers(poll_id, member_id, answers, comment, updated_at) VALUES(?, ?, ?, ?, ?)
            ON CONFLICT(poll_id, member_id) DO UPDATE SET answers = excluded.answers, comment = excluded.comment, updated_at = excluded.updated_at`,
           p.id,
@@ -734,18 +734,18 @@ CREATE TABLE IF NOT EXISTS poll_answers (
           comment,
           c.now.ts,
         );
-        return pollDetail(c, p.id);
+        return await pollDetail(c, p.id);
       },
     ],
     // この日に決定 → 予定を作って締める
     [
       "POST",
       "/polls/:id/decide",
-      (c) => {
-        const p = getPoll(c.db, c.params.id);
+      async (c) => {
+        const p = await getPoll(c.db, c.params.id);
         if (p.status === "decided") throw conflict("すでに決定しています");
         const optionId = v.int(c.body.option_id, "候補", { min: 1, required: true });
-        const option = c.db.one("SELECT * FROM poll_options WHERE id = ? AND poll_id = ?", optionId, p.id);
+        const option = await c.db.one("SELECT * FROM poll_options WHERE id = ? AND poll_id = ?", optionId, p.id);
         if (!option) throw notFound("候補が見つかりません");
         const extra = c.body.event && typeof c.body.event === "object" ? c.body.event : {};
         const f = eventFields(
@@ -759,9 +759,9 @@ CREATE TABLE IF NOT EXISTS poll_answers (
             date: option.date,
           },
         );
-        const event = c.db.tx(() => {
-          const e = insertEvent(c, f);
-          c.db.run(
+        const event = await c.db.tx(async () => {
+          const e = await insertEvent(c, f);
+          await c.db.run(
             "UPDATE polls SET status = 'decided', decided_option_id = ?, event_id = ?, updated_at = ? WHERE id = ?",
             option.id,
             e.id,
@@ -770,7 +770,7 @@ CREATE TABLE IF NOT EXISTS poll_answers (
           );
           return e;
         });
-        const poll = getPoll(c.db, p.id);
+        const poll = await getPoll(c.db, p.id);
         c.emit("poll.decided", { poll, event });
         return { poll, event };
       },
@@ -781,9 +781,9 @@ CREATE TABLE IF NOT EXISTS poll_answers (
     [
       "GET",
       "/ics/:token",
-      (c) => {
+      async (c) => {
         if (!safeEqual(c.params.token, c.settings.icsToken)) throw notFound("カレンダーが見つかりません");
-        const events = c.db.all("SELECT * FROM events WHERE date >= ? ORDER BY date, id", addDays(c.now.date, -365));
+        const events = await c.db.all("SELECT * FROM events WHERE date >= ? ORDER BY date, id", addDays(c.now.date, -365));
         return raw(buildIcs(c, events), {
           headers: {
             "Content-Type": "text/calendar; charset=utf-8",

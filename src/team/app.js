@@ -110,7 +110,7 @@ export function createTeamApp({ db, env = {}, features = [], clock = () => Date.
         const fn = f.on?.[name];
         if (!fn) continue;
         try {
-          await fn(c, payload);
+          await c.db.savepoint(() => fn(c, payload));
         } catch (err) {
           log.error(`[${f.name}] on ${name} failed`, err);
         }
@@ -144,7 +144,7 @@ export function createTeamApp({ db, env = {}, features = [], clock = () => Date.
         for (const f of features) {
           if (!f.cron) continue;
           try {
-            await f.cron(c);
+            await tx.savepoint(() => f.cron(c));
           } catch (err) {
             log.error(`[${f.name}] cron failed`, err);
           }

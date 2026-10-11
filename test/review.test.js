@@ -106,9 +106,9 @@ test("予定を削除すると起床報告も消える", async () => {
   const admin = await t.join("監督");
   const ev = (await admin.post("/events", { type: "practice", title: "朝練", date: "2026-10-18", meet_time: "08:00" })).body.event;
   assert.equal((await admin.post(`/wakeups/${ev.id}`, { stage: "woke" })).status, 200);
-  assert.equal(t.db.one("SELECT COUNT(*) AS n FROM wakeups").n, 1);
+  assert.equal((await t.db.one("SELECT COUNT(*) AS n FROM wakeups")).n, 1);
   assert.equal((await admin.del(`/events/${ev.id}`)).status, 200);
-  assert.equal(t.db.one("SELECT COUNT(*) AS n FROM wakeups").n, 0);
+  assert.equal((await t.db.one("SELECT COUNT(*) AS n FROM wakeups")).n, 0);
 });
 
 test("予定から試合を作るとき、長いタイトルでも対戦相手の上限で失敗しない", async () => {
@@ -125,10 +125,10 @@ test("dev-seed の作り直しで打席ごとの結果も消える", async () =>
   const t = makeTeam({ env: { ALLOW_MOCK: "true" } });
   const admin = await t.join("監督");
   assert.equal((await admin.post("/stats/dev-seed", { games: 1 })).status, 200);
-  const gid = t.db.one("SELECT id FROM games WHERE memo = '[dev-seed]' LIMIT 1").id;
-  t.db.run("INSERT INTO games_at_bats(game_id, member_id, seq, result) VALUES(?, 1, 1, '1B')", gid);
+  const gid = (await t.db.one("SELECT id FROM games WHERE memo = '[dev-seed]' LIMIT 1")).id;
+  await t.db.run("INSERT INTO games_at_bats(game_id, member_id, seq, result) VALUES(?, 1, 1, '1B')", gid);
   assert.equal((await admin.post("/stats/dev-seed", { games: 1 })).status, 200);
-  assert.equal(t.db.one("SELECT COUNT(*) AS n FROM games_at_bats WHERE game_id = ?", gid).n, 0);
+  assert.equal((await t.db.one("SELECT COUNT(*) AS n FROM games_at_bats WHERE game_id = ?", gid)).n, 0);
 });
 
 // ---------------------------------------------------------------- LINE cron
@@ -158,15 +158,15 @@ test("成績入力リマインド: 控え・投手成績入力済み・退団者
   const jiro = await t.join("次郎");
   const saburo = await t.join("三郎");
   const shiro = await t.join("四郎");
-  const gid = t.db.run(
+  const gid = (await t.db.run(
     "INSERT INTO games(season, date, opponent, status, created_at, updated_at) VALUES(2026, '2026-10-11', '川口', 'draft', 0, 0)",
-  ).lastId;
+  )).lastId;
   const bat = (id, pos) => t.db.run("INSERT INTO batting(game_id, member_id, position, pa, updated_at) VALUES(?, ?, ?, 0, 0)", gid, id, pos);
-  bat(taro.member.id, "遊"); // 未入力 → 名前が出る
-  bat(jiro.member.id, "控え"); // 控え → 出ない
-  bat(saburo.member.id, "投"); // 投手成績あり → 出ない
-  t.db.run("INSERT INTO pitching(game_id, member_id, outs, updated_at) VALUES(?, ?, 21, 0)", gid, saburo.member.id);
-  bat(shiro.member.id, "右"); // 退団 → 出ない
+  await bat(taro.member.id, "遊"); // 未入力 → 名前が出る
+  await bat(jiro.member.id, "控え"); // 控え → 出ない
+  await bat(saburo.member.id, "投"); // 投手成績あり → 出ない
+  await t.db.run("INSERT INTO pitching(game_id, member_id, outs, updated_at) VALUES(?, ?, 21, 0)", gid, saburo.member.id);
+  await bat(shiro.member.id, "右"); // 退団 → 出ない
   assert.equal((await admin.patch(`/members/${shiro.member.id}`, { active: false })).status, 200);
 
   calls = [];

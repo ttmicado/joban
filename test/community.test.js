@@ -4,8 +4,8 @@ import { makeTeam } from "./helpers/team.js";
 import { features as allFeatures } from "../src/team/features/index.js";
 
 // 予定を直接 INSERT（schedule 機能に依存しない）
-function addEvent(t, { date, meet = "08:00", start = "09:00", status = "scheduled", title = "練習試合" }) {
-  const { lastId } = t.db.run(
+async function addEvent(t, { date, meet = "08:00", start = "09:00", status = "scheduled", title = "練習試合" }) {
+  const { lastId } = await t.db.run(
     `INSERT INTO events(type, title, date, meet_time, start_time, status, created_at, updated_at)
      VALUES('game', ?, ?, ?, ?, ?, 0, 0)`,
     title,
@@ -140,10 +140,10 @@ test("起床: 順位・ステージ・emit・当日以外は不可", async () =>
   const admin = await t.join("監督");
   const taro = await t.join("太郎");
   const jiro = await t.join("次郎");
-  const today = addEvent(t, { date: "2026-10-18" });
-  const tomorrow = addEvent(t, { date: "2026-10-19" });
-  const canceled = addEvent(t, { date: "2026-10-18", status: "canceled" });
-  for (const m of [admin, taro, jiro]) rsvp(t, today, m.member.id, m === jiro ? "no" : "yes");
+  const today = await addEvent(t, { date: "2026-10-18" });
+  const tomorrow = await addEvent(t, { date: "2026-10-19" });
+  const canceled = await addEvent(t, { date: "2026-10-18", status: "canceled" });
+  for (const m of [admin, taro, jiro]) await rsvp(t, today, m.member.id, m === jiro ? "no" : "yes");
 
   assert.equal((await taro.post(`/wakeups/${tomorrow}`, { stage: "woke" })).status, 400);
   assert.equal((await taro.post(`/wakeups/${canceled}`, { stage: "woke" })).status, 400);
@@ -208,13 +208,13 @@ test("起床ランキング: 一番乗り回数と平均（集合の何分前）
   const t = makeTeam({ now: "2026-05-01T06:00" });
   const a = await t.join("監督");
   const b = await t.join("太郎");
-  const e1 = addEvent(t, { date: "2026-05-01", meet: "08:00" });
+  const e1 = await addEvent(t, { date: "2026-05-01", meet: "08:00" });
   await b.post(`/wakeups/${e1}`, { stage: "woke" }); // 120分前
   t.setNow("2026-05-01T07:00");
   await a.post(`/wakeups/${e1}`, { stage: "woke" }); // 60分前
 
   t.setNow("2026-05-08T06:30");
-  const e2 = addEvent(t, { date: "2026-05-08", meet: "08:00" });
+  const e2 = await addEvent(t, { date: "2026-05-08", meet: "08:00" });
   await b.post(`/wakeups/${e2}`, { stage: "woke" }); // 90分前
 
   const r = await a.get("/wakeups/ranking?season=2026");

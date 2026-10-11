@@ -6,6 +6,7 @@
 //   await db.exec(sql)            → 複数ステートメントの実行（マイグレーション用・パラメータ無し）
 //   await db.tx(async (tx) => …)  → トランザクション。tx も同じ API。入れ子の tx はそのまま外側に参加する
 //   await tx.lock(key)            → トランザクション終了まで有効な排他ロック（pg_advisory_xact_lock）
+//   await tx.savepoint(async (tx) => …) → 失敗してもその部分だけ取り消す（外側のトランザクションは続行できる）
 //
 // プレースホルダは SQLite 風の `?` でも Postgres の `$1` でもよい（`?` は自動で `$n` に変換）。
 // BIGINT / NUMERIC は JS の number に変換して返す。
@@ -55,6 +56,8 @@ function convertRows(result) {
   });
 }
 
+let spSeq = 0;
+
 // query(text, params) → { rows, fields, rowCount } を返す低レベル関数から db を作る
 function wrap(query, { tx, execMulti, inTx }) {
   const db = {
@@ -73,6 +76,21 @@ function wrap(query, { tx, execMulti, inTx }) {
     },
     exec: (sql) => execMulti(sql),
     tx: (fn) => (inTx ? fn(db) : tx(fn)),
+    // トランザクション内の一部分を SAVEPOINT で囲む。fn が失敗したらその部分だけ取り消して例外を投げ直す
+    // （Postgres はトランザクション内で1文でも失敗すると以降がすべて失敗するため、失敗を許容する処理に使う）
+    async savepoint(fn) {
+      if (!inTx) return fn(db);
+      const name = `sp_${++spSeq}`;
+      await query(`SAVEPOINT ${name}`, []);
+      try {
+        const r = await fn(db);
+        await query(`RELEASE SAVEPOINT ${name}`, []);
+        return r;
+      } catch (err) {
+        await query(`ROLLBACK TO SAVEPOINT ${name}`, []);
+        throw err;
+      }
+    },
     async lock(key) {
       if (!inTx) throw new Error("lock() はトランザクション内で呼んでください");
       await query("SELECT pg_advisory_xact_lock(hashtext($1))", [String(key)]);

@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS wakeups (
   late_minutes BIGINT,                  -- 遅れる見込み（分）
   late_at BIGINT,
   updated_at BIGINT NOT NULL,
+  seq BIGSERIAL,                         -- 同時刻のときの順位決め（報告順）
   PRIMARY KEY (event_id, member_id)
 );
 CREATE INDEX IF NOT EXISTS wakeups_event ON wakeups(event_id, at);
@@ -76,19 +77,19 @@ CREATE TABLE IF NOT EXISTS practice_likes (
 ];
 
 // ---------------------------------------------------------------- 共通
-const membersById = (db) => {
+const membersById = async (db) => {
   const map = new Map();
-  for (const m of db.all("SELECT * FROM members")) map.set(m.id, publicMember(m));
+  for (const m of await db.all("SELECT * FROM members")) map.set(m.id, publicMember(m));
   return map;
 };
 // お知らせの対象者（LINE 連携済みの在籍メンバー）
-const audience = (db) => db.all("SELECT * FROM members WHERE active = 1 AND line_user_id IS NOT NULL ORDER BY id");
+const audience = async (db) => await db.all("SELECT * FROM members WHERE active = 1 AND line_user_id IS NOT NULL ORDER BY id");
 
 const idParam = (val, label = "ID") => v.int(val, label, { min: 1, max: 1e12, required: true });
 
 // ================================================================ お知らせ
-function getNotice(db, id) {
-  const n = db.one("SELECT * FROM notices WHERE id = ?", idParam(id));
+async function getNotice(db, id) {
+  const n = await db.one("SELECT * FROM notices WHERE id = ?", idParam(id));
   if (!n) throw notFound("お知らせが見つかりません");
   return n;
 }
@@ -109,13 +110,17 @@ function noticeFields(c, body, { partial = false } = {}) {
   return out;
 }
 
-function noticeView(db, n, me, { members, total, stats } = {}) {
-  members ??= membersById(db);
-  const s = stats?.get(n.id) || db.one(
-    "SELECT COUNT(*) AS reads, COUNT(ack_at) AS acks FROM notice_reads r JOIN members m ON m.id = r.member_id WHERE r.notice_id = ? AND m.active = 1",
-    n.id,
-  );
-  const mine = db.one("SELECT read_at, ack_at FROM notice_reads WHERE notice_id = ? AND member_id = ?", n.id, me.id);
+async function noticeView(db, n, me, { members, total, stats, mineMap } = {}) {
+  members ??= await membersById(db);
+  const s = stats
+    ? stats.get(n.id)
+    : await db.one(
+        "SELECT COUNT(*) AS reads, COUNT(ack_at) AS acks FROM notice_reads r JOIN members m ON m.id = r.member_id WHERE r.notice_id = ? AND m.active = 1",
+        n.id,
+      );
+  const mine = mineMap
+    ? mineMap.get(n.id)
+    : await db.one("SELECT read_at, ack_at FROM notice_reads WHERE notice_id = ? AND member_id = ?", n.id, me.id);
   return {
     id: n.id,
     category: n.category,
@@ -128,36 +133,50 @@ function noticeView(db, n, me, { members, total, stats } = {}) {
     edited: n.updated_at > n.created_at,
     readCount: s?.reads || 0,
     ackCount: s?.acks || 0,
-    total: total ?? audience(db).length,
+    total: total ?? (await audience(db)).length,
     read: !!mine,
     acked: !!mine?.ack_at,
   };
 }
 
-function listNotices(c) {
+async function listNotices(c) {
   const limit = v.int(c.query.limit, "件数", { min: 1, max: 100 }) ?? 50;
-  const rows = c.db.all("SELECT * FROM notices ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ?", limit);
-  const members = membersById(c.db);
-  const total = audience(c.db).length;
+  const rows = await c.db.all("SELECT * FROM notices ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ?", limit);
+  const members = await membersById(c.db);
+  const total = (await audience(c.db)).length;
+  const ids = rows.map((n) => n.id);
+  // 一覧に出すお知らせの集計と自分の既読をまとめて取る（N+1 回避）
   const stats = new Map(
-    c.db
-      .all(
+    (
+      await c.db.all(
         `SELECT r.notice_id AS id, COUNT(*) AS reads, COUNT(r.ack_at) AS acks
-         FROM notice_reads r JOIN members m ON m.id = r.member_id WHERE m.active = 1 GROUP BY r.notice_id`,
+         FROM notice_reads r JOIN members m ON m.id = r.member_id
+         WHERE m.active = 1 AND r.notice_id = ANY(?::bigint[]) GROUP BY r.notice_id`,
+        ids,
       )
-      .map((r) => [r.id, r]),
+    ).map((r) => [r.id, r]),
   );
-  const notices = rows.map((n) => noticeView(c.db, n, c.member, { members, total, stats }));
-  const unread = c.db.one(
+  const mineMap = new Map(
+    (
+      await c.db.all(
+        "SELECT notice_id, read_at, ack_at FROM notice_reads WHERE member_id = ? AND notice_id = ANY(?::bigint[])",
+        c.member.id,
+        ids,
+      )
+    ).map((r) => [r.notice_id, r]),
+  );
+  const notices = [];
+  for (const n of rows) notices.push(await noticeView(c.db, n, c.member, { members, total, stats, mineMap }));
+  const unread = (await c.db.one(
     `SELECT COUNT(*) AS n FROM notices n
      WHERE NOT EXISTS (SELECT 1 FROM notice_reads r WHERE r.notice_id = n.id AND r.member_id = ?)`,
     c.member.id,
-  ).n;
+  )).n;
   return { notices, unread };
 }
 
-function markRead(db, noticeId, memberId, ts, { ack = false } = {}) {
-  db.run(
+async function markRead(db, noticeId, memberId, ts, { ack = false } = {}) {
+  await db.run(
     `INSERT INTO notice_reads(notice_id, member_id, read_at, ack_at) VALUES(?, ?, ?, ?)
      ON CONFLICT(notice_id, member_id) DO UPDATE SET ack_at = COALESCE(notice_reads.ack_at, excluded.ack_at)`,
     noticeId,
@@ -167,13 +186,13 @@ function markRead(db, noticeId, memberId, ts, { ack = false } = {}) {
   );
 }
 
-function noticeDetail(c, n) {
-  const members = membersById(c.db);
-  const reads = new Map(c.db.all("SELECT * FROM notice_reads WHERE notice_id = ?", n.id).map((r) => [r.member_id, r]));
+async function noticeDetail(c, n) {
+  const members = await membersById(c.db);
+  const reads = new Map((await c.db.all("SELECT * FROM notice_reads WHERE notice_id = ?", n.id)).map((r) => [r.member_id, r]));
   const acked = [];
   const readOnly = [];
   const unread = [];
-  for (const m of audience(c.db)) {
+  for (const m of await audience(c.db)) {
     const r = reads.get(m.id);
     const pm = members.get(m.id);
     if (r?.ack_at) acked.push({ ...pm, at: r.ack_at });
@@ -182,7 +201,7 @@ function noticeDetail(c, n) {
   }
   acked.sort((a, b) => a.at - b.at);
   return {
-    notice: noticeView(c.db, n, c.member, { members }),
+    notice: await noticeView(c.db, n, c.member, { members }),
     acked,
     notAcked: [...readOnly.map((m) => ({ ...m, read: true })), ...unread.map((m) => ({ ...m, read: false }))],
     canEdit: c.isAdmin || n.author_id === c.member.id,
@@ -196,8 +215,8 @@ const noticeRoutes = [
   [
     "GET",
     "/notices/pending",
-    (c) => {
-      const rows = c.db.all(
+    async (c) => {
+      const rows = await c.db.all(
         `SELECT n.* FROM notices n
          WHERE n.author_id != ? AND NOT EXISTS (
            SELECT 1 FROM notice_reads r WHERE r.notice_id = n.id AND r.member_id = ? AND r.ack_at IS NOT NULL)
@@ -205,16 +224,16 @@ const noticeRoutes = [
         c.member.id,
         c.member.id,
       );
-      return { count: rows.length, notice: rows[0] ? noticeView(c.db, rows[0], c.member) : null };
+      return { count: rows.length, notice: rows[0] ? await noticeView(c.db, rows[0], c.member) : null };
     },
   ],
 
   [
     "POST",
     "/notices",
-    (c) => {
+    async (c) => {
       const f = noticeFields(c, c.body);
-      const { lastId } = c.db.run(
+      const { lastId } = await c.db.run(
         "INSERT INTO notices(author_id, category, title, body, pinned, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
         c.member.id,
         f.category,
@@ -225,9 +244,9 @@ const noticeRoutes = [
         c.now.ts,
       );
       // 投稿者は既読・了解済み扱い
-      markRead(c.db, lastId, c.member.id, c.now.ts, { ack: true });
-      const row = getNotice(c.db, lastId);
-      const notice = noticeView(c.db, row, c.member);
+      await markRead(c.db, lastId, c.member.id, c.now.ts, { ack: true });
+      const row = await getNotice(c.db, lastId);
+      const notice = await noticeView(c.db, row, c.member);
       c.emit("notice.created", { notice, author: publicMember(c.member) });
       return { notice };
     },
@@ -237,18 +256,18 @@ const noticeRoutes = [
   [
     "GET",
     "/notices/:id",
-    (c) => {
-      const n = getNotice(c.db, c.params.id);
-      markRead(c.db, n.id, c.member.id, c.now.ts);
-      return noticeDetail(c, n);
+    async (c) => {
+      const n = await getNotice(c.db, c.params.id);
+      await markRead(c.db, n.id, c.member.id, c.now.ts);
+      return await noticeDetail(c, n);
     },
   ],
 
   [
     "PATCH",
     "/notices/:id",
-    (c) => {
-      const n = getNotice(c.db, c.params.id);
+    async (c) => {
+      const n = await getNotice(c.db, c.params.id);
       if (!c.isAdmin && n.author_id !== c.member.id) throw forbidden("投稿者か管理者だけが編集できます");
       const f = noticeFields(c, c.body, { partial: true });
       // メンバーが自分の投稿を編集するとき、管理者が付けたピン・重要は保持する
@@ -258,26 +277,26 @@ const noticeRoutes = [
       }
       const keys = Object.keys(f);
       if (keys.length) {
-        c.db.run(
+        await c.db.run(
           `UPDATE notices SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
           ...keys.map((k) => f[k]),
           c.now.ts,
           n.id,
         );
       }
-      return noticeDetail(c, getNotice(c.db, n.id));
+      return await noticeDetail(c, await getNotice(c.db, n.id));
     },
   ],
 
   [
     "DELETE",
     "/notices/:id",
-    (c) => {
-      const n = getNotice(c.db, c.params.id);
+    async (c) => {
+      const n = await getNotice(c.db, c.params.id);
       if (!c.isAdmin && n.author_id !== c.member.id) throw forbidden("投稿者か管理者だけが削除できます");
-      c.db.tx(() => {
-        c.db.run("DELETE FROM notice_reads WHERE notice_id = ?", n.id);
-        c.db.run("DELETE FROM notices WHERE id = ?", n.id);
+      await c.db.tx(async (tx) => {
+        await tx.run("DELETE FROM notice_reads WHERE notice_id = ?", n.id);
+        await tx.run("DELETE FROM notices WHERE id = ?", n.id);
       });
       return { ok: true };
     },
@@ -287,19 +306,19 @@ const noticeRoutes = [
   [
     "POST",
     "/notices/:id/ack",
-    (c) => {
-      const n = getNotice(c.db, c.params.id);
-      markRead(c.db, n.id, c.member.id, c.now.ts, { ack: true });
-      return { notice: noticeView(c.db, n, c.member) };
+    async (c) => {
+      const n = await getNotice(c.db, c.params.id);
+      await markRead(c.db, n.id, c.member.id, c.now.ts, { ack: true });
+      return { notice: await noticeView(c.db, n, c.member) };
     },
   ],
   [
     "DELETE",
     "/notices/:id/ack",
-    (c) => {
-      const n = getNotice(c.db, c.params.id);
-      c.db.run("UPDATE notice_reads SET ack_at = NULL WHERE notice_id = ? AND member_id = ?", n.id, c.member.id);
-      return { notice: noticeView(c.db, n, c.member) };
+    async (c) => {
+      const n = await getNotice(c.db, c.params.id);
+      await c.db.run("UPDATE notice_reads SET ack_at = NULL WHERE notice_id = ? AND member_id = ?", n.id, c.member.id);
+      return { notice: await noticeView(c.db, n, c.member) };
     },
   ],
 ];
@@ -307,8 +326,8 @@ const noticeRoutes = [
 // ================================================================ 起床報告
 const meetTime = (e) => e.meet_time || e.start_time || null;
 
-function getEvent(db, id) {
-  const e = db.one("SELECT * FROM events WHERE id = ?", idParam(id, "予定"));
+async function getEvent(db, id) {
+  const e = await db.one("SELECT * FROM events WHERE id = ?", idParam(id, "予定"));
   if (!e) throw notFound("予定が見つかりません");
   return e;
 }
@@ -338,12 +357,15 @@ const eventView = (e) => ({
   status: e.status,
 });
 
-function eventBoard(c, e) {
-  const wakes = c.db.all("SELECT * FROM wakeups WHERE event_id = ? ORDER BY at, rowid", e.id);
+async function eventBoard(c, e) {
+  const wakes = await c.db.all("SELECT * FROM wakeups WHERE event_id = ? ORDER BY at, seq", e.id);
   const rankOf = new Map(wakes.map((w, i) => [w.member_id, i + 1]));
   const wakeOf = new Map(wakes.map((w) => [w.member_id, w]));
-  const att = new Map(c.db.all("SELECT member_id, status FROM attendance WHERE event_id = ?", e.id).map((a) => [a.member_id, a.status]));
-  const rows = c.db.all("SELECT * FROM members WHERE active = 1 OR id IN (SELECT member_id FROM wakeups WHERE event_id = ?)", e.id);
+  const att = new Map((await c.db.all("SELECT member_id, status FROM attendance WHERE event_id = ?", e.id)).map((a) => [a.member_id, a.status]));
+  const rows = await c.db.all(
+    "SELECT * FROM members WHERE active = 1 OR id IN (SELECT member_id FROM wakeups WHERE event_id = ?) ORDER BY id",
+    e.id,
+  );
   const people = [];
   for (const m of rows) {
     const status = att.get(m.id) || null;
@@ -378,23 +400,32 @@ function eventBoard(c, e) {
 
 const canWake = (c, e) => e.status === "scheduled" && e.date === c.now.date;
 
-function todayEvents(c) {
-  return c.db.all(
+async function todayEvents(c) {
+  return await c.db.all(
     "SELECT * FROM events WHERE date = ? AND status = 'scheduled' ORDER BY COALESCE(meet_time, start_time, '99:99'), id",
     c.now.date,
   );
 }
 
-function ranking(c) {
+async function ranking(c) {
   const season = v.int(c.query.season, "年度", { min: 2000, max: 2100 }) ?? Number(c.settings.season);
-  const events = c.db.all(
-    "SELECT * FROM events WHERE status = 'scheduled' AND date >= ? AND date <= ? AND id IN (SELECT event_id FROM wakeups)",
+  const events = await c.db.all(
+    "SELECT * FROM events WHERE status = 'scheduled' AND date >= ? AND date <= ? AND id IN (SELECT event_id FROM wakeups) ORDER BY date, id",
     `${season}-01-01`,
     `${season}-12-31`,
   );
+  // 対象予定の起床報告をまとめて取る（予定ごとに順位順）
+  const wakesByEvent = new Map();
+  for (const w of await c.db.all(
+    "SELECT * FROM wakeups WHERE event_id = ANY(?::bigint[]) ORDER BY event_id, at, seq",
+    events.map((e) => e.id),
+  )) {
+    if (!wakesByEvent.has(w.event_id)) wakesByEvent.set(w.event_id, []);
+    wakesByEvent.get(w.event_id).push(w);
+  }
   const stat = new Map();
   for (const e of events) {
-    const wakes = c.db.all("SELECT * FROM wakeups WHERE event_id = ? ORDER BY at, rowid", e.id);
+    const wakes = wakesByEvent.get(e.id) || [];
     const meet = meetTime(e);
     const meetTs = meet ? toTs(e.date, meet) : null;
     wakes.forEach((w, i) => {
@@ -410,7 +441,7 @@ function ranking(c) {
       stat.set(w.member_id, s);
     });
   }
-  const members = membersById(c.db);
+  const members = await membersById(c.db);
   const list = [...stat.entries()]
     .map(([id, s]) => ({
       member: members.get(id),
@@ -428,7 +459,11 @@ const wakeRoutes = [
   [
     "GET",
     "/wakeups/today",
-    (c) => ({ date: c.now.date, now: c.now.ts, events: todayEvents(c).map((e) => eventBoard(c, e)) }),
+    async (c) => {
+      const events = [];
+      for (const e of await todayEvents(c)) events.push(await eventBoard(c, e));
+      return { date: c.now.date, now: c.now.ts, events };
+    },
   ],
   ["GET", "/wakeups/ranking", ranking],
 
@@ -436,11 +471,11 @@ const wakeRoutes = [
   [
     "POST",
     "/wakeups/dev-event",
-    (c) => {
+    async (c) => {
       if (c.env.ALLOW_MOCK !== "true") throw notFound("APIが見つかりません");
       const [h] = c.now.time.split(":").map(Number);
       const pad = (n) => String(Math.min(23, n)).padStart(2, "0");
-      const { lastId } = c.db.run(
+      const { lastId } = await c.db.run(
         `INSERT INTO events(type, title, date, meet_time, start_time, venue, status, created_by, created_at, updated_at)
          VALUES('practice', '朝練（開発用）', ?, ?, ?, '河川敷グラウンド', 'scheduled', ?, ?, ?)`,
         c.now.date,
@@ -451,33 +486,36 @@ const wakeRoutes = [
         c.now.ts,
       );
       // 在籍メンバーを全員「出席」にしておく
-      for (const m of c.db.all("SELECT id FROM members WHERE active = 1")) {
-        c.db.run("INSERT OR IGNORE INTO attendance(event_id, member_id, status, updated_at) VALUES(?, ?, 'yes', ?)", lastId, m.id, c.now.ts);
-      }
-      return { event: eventView(getEvent(c.db, lastId)) };
+      await c.db.run(
+        `INSERT INTO attendance(event_id, member_id, status, updated_at)
+         SELECT ?, id, 'yes', ? FROM members WHERE active = 1 ON CONFLICT DO NOTHING`,
+        lastId,
+        c.now.ts,
+      );
+      return { event: eventView(await getEvent(c.db, lastId)) };
     },
     { auth: "admin" },
   ],
 
-  ["GET", "/wakeups/:eventId", (c) => eventBoard(c, getEvent(c.db, c.params.eventId))],
+  ["GET", "/wakeups/:eventId", async (c) => await eventBoard(c, await getEvent(c.db, c.params.eventId))],
 
   [
     "POST",
     "/wakeups/:eventId",
-    (c) => {
-      const e = getEvent(c.db, c.params.eventId);
+    async (c) => {
+      const e = await getEvent(c.db, c.params.eventId);
       if (e.status !== "scheduled") throw badRequest("中止になった予定です");
       if (e.date !== c.now.date) throw badRequest("起床報告は予定の当日だけできます");
       const stage = v.oneOf(c.body.stage, "報告の種類", WAKE_STAGES, { required: true });
       const comment = v.str(c.body.comment, "ひとこと", { max: 100 });
       const lateMinutes = stage === "late" ? v.int(c.body.lateMinutes, "遅れる時間", { min: 1, max: 600, required: true }) : null;
 
-      const existing = c.db.one("SELECT * FROM wakeups WHERE event_id = ? AND member_id = ?", e.id, c.member.id);
+      const existing = await c.db.one("SELECT * FROM wakeups WHERE event_id = ? AND member_id = ?", e.id, c.member.id);
       const ts = c.now.ts;
       let created = false;
       if (!existing) {
         // 出発・到着・遅刻の報告でも「起きた」ことになる
-        c.db.run(
+        await c.db.run(
           "INSERT INTO wakeups(event_id, member_id, at, comment, updated_at) VALUES(?, ?, ?, ?, ?)",
           e.id,
           c.member.id,
@@ -501,15 +539,15 @@ const wakeRoutes = [
         set.late_at = ts;
       }
       const keys = Object.keys(set);
-      c.db.run(
+      await c.db.run(
         `UPDATE wakeups SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE event_id = ? AND member_id = ?`,
         ...keys.map((k) => set[k]),
         e.id,
         c.member.id,
       );
-      const board = eventBoard(c, e);
+      const board = await eventBoard(c, e);
       if (created) {
-        const wakeup = c.db.one("SELECT * FROM wakeups WHERE event_id = ? AND member_id = ?", e.id, c.member.id);
+        const wakeup = await c.db.one("SELECT * FROM wakeups WHERE event_id = ? AND member_id = ?", e.id, c.member.id);
         c.emit("wakeup.created", { wakeup, member: publicMember(c.member), event: e });
       }
       return { ...board, created, rank: board.me.wakeup.rank };
@@ -520,17 +558,17 @@ const wakeRoutes = [
   [
     "DELETE",
     "/wakeups/:eventId",
-    (c) => {
-      const e = getEvent(c.db, c.params.eventId);
+    async (c) => {
+      const e = await getEvent(c.db, c.params.eventId);
       if (e.date !== c.now.date) throw badRequest("当日だけ取り消せます");
       const stage = v.oneOf(c.query.stage || c.body?.stage, "報告の種類", WAKE_STAGES);
       if (!stage || stage === "woke") {
-        c.db.run("DELETE FROM wakeups WHERE event_id = ? AND member_id = ?", e.id, c.member.id);
+        await c.db.run("DELETE FROM wakeups WHERE event_id = ? AND member_id = ?", e.id, c.member.id);
       } else {
         const col = { left: "left_at = NULL, arrived_at = NULL", arrived: "arrived_at = NULL", late: "late_minutes = NULL, late_at = NULL" }[stage];
-        c.db.run(`UPDATE wakeups SET ${col}, updated_at = ? WHERE event_id = ? AND member_id = ?`, c.now.ts, e.id, c.member.id);
+        await c.db.run(`UPDATE wakeups SET ${col}, updated_at = ? WHERE event_id = ? AND member_id = ?`, c.now.ts, e.id, c.member.id);
       }
-      return eventBoard(c, e);
+      return await eventBoard(c, e);
     },
   ],
 ];
@@ -563,14 +601,17 @@ function practiceFields(c, body, { partial = false } = {}) {
   return out;
 }
 
-function getPractice(db, id) {
-  const p = db.one("SELECT * FROM practices WHERE id = ?", idParam(id));
+async function getPractice(db, id) {
+  const p = await db.one("SELECT * FROM practices WHERE id = ?", idParam(id));
   if (!p) throw notFound("練習報告が見つかりません");
   return p;
 }
 
-function practiceView(db, p, me, members = membersById(db)) {
-  const likes = db.all("SELECT member_id FROM practice_likes WHERE practice_id = ? ORDER BY at", p.id);
+async function practiceView(db, p, me, members, likesMap) {
+  members ??= await membersById(db);
+  const likes = likesMap
+    ? likesMap.get(p.id) || []
+    : await db.all("SELECT member_id FROM practice_likes WHERE practice_id = ? ORDER BY at, member_id", p.id);
   return {
     id: p.id,
     member: members.get(p.member_id) || null,
@@ -613,17 +654,17 @@ function bestStreak(dates) {
 const sumKind = (rows, kind, unit) =>
   rows.reduce((s, p) => s + JSON.parse(p.items || "[]").filter((i) => i.kind === kind && i.unit === unit).reduce((a, i) => a + i.amount, 0), 0);
 
-function monthRanking(c) {
+async function monthRanking(c) {
   const month = c.query.month || c.now.date.slice(0, 7);
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw badRequest("月の形式が不正です");
-  const rows = c.db.all("SELECT * FROM practices WHERE date >= ? AND date <= ?", `${month}-01`, `${month}-31`);
+  const rows = await c.db.all("SELECT * FROM practices WHERE date >= ? AND date <= ?", `${month}-01`, `${month}-31`);
   const by = new Map();
   for (const p of rows) {
     const list = by.get(p.member_id) || [];
     list.push(p);
     by.set(p.member_id, list);
   }
-  const members = membersById(c.db);
+  const members = await membersById(c.db);
   const ranking = [...by.entries()]
     .map(([id, list]) => ({
       member: members.get(id),
@@ -641,10 +682,10 @@ function monthRanking(c) {
   };
 }
 
-function practiceSummary(c, memberId) {
+async function practiceSummary(c, memberId) {
   const today = c.now.date;
   const since = addDays(today, -400);
-  const rows = c.db.all("SELECT * FROM practices WHERE member_id = ? AND date >= ? ORDER BY date", memberId, since);
+  const rows = await c.db.all("SELECT * FROM practices WHERE member_id = ? AND date >= ? ORDER BY date", memberId, since);
   const dates = rows.map((p) => p.date);
   const days = {};
   for (const p of rows) days[p.date] = (days[p.date] || 0) + 1;
@@ -676,7 +717,7 @@ const practiceRoutes = [
   [
     "GET",
     "/practices",
-    (c) => {
+    async (c) => {
       const limit = v.int(c.query.limit, "件数", { min: 1, max: 100 }) ?? 30;
       const before = v.int(c.query.before, "ID", { min: 1, max: 1e12 });
       const memberId = v.int(c.query.member, "メンバー", { min: 1, max: 1e12 });
@@ -684,33 +725,42 @@ const practiceRoutes = [
       const params = [];
       if (before) where.push("id < ?"), params.push(before);
       if (memberId) where.push("member_id = ?"), params.push(memberId);
-      const rows = c.db.all(
+      const rows = await c.db.all(
         `SELECT * FROM practices ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY date DESC, id DESC LIMIT ?`,
         ...params,
         limit + 1,
       );
-      const members = membersById(c.db);
-      return {
-        practices: rows.slice(0, limit).map((p) => practiceView(c.db, p, c.member, members)),
-        hasMore: rows.length > limit,
-      };
+      const members = await membersById(c.db);
+      const page = rows.slice(0, limit);
+      // ナイス！をまとめて取る（N+1 回避）
+      const likesMap = new Map();
+      for (const l of await c.db.all(
+        "SELECT practice_id, member_id FROM practice_likes WHERE practice_id = ANY(?::bigint[]) ORDER BY at, member_id",
+        page.map((p) => p.id),
+      )) {
+        if (!likesMap.has(l.practice_id)) likesMap.set(l.practice_id, []);
+        likesMap.get(l.practice_id).push(l);
+      }
+      const practices = [];
+      for (const p of page) practices.push(await practiceView(c.db, p, c.member, members, likesMap));
+      return { practices, hasMore: rows.length > limit };
     },
   ],
   ["GET", "/practices/ranking", monthRanking],
   [
     "GET",
     "/practices/summary",
-    (c) => {
+    async (c) => {
       const id = v.int(c.query.member, "メンバー", { min: 1, max: 1e12 }) ?? c.member.id;
-      return practiceSummary(c, id);
+      return await practiceSummary(c, id);
     },
   ],
   [
     "POST",
     "/practices",
-    (c) => {
+    async (c) => {
       const f = practiceFields(c, c.body);
-      const { lastId } = c.db.run(
+      const { lastId } = await c.db.run(
         "INSERT INTO practices(member_id, date, items, comment, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
         c.member.id,
         f.date,
@@ -719,41 +769,41 @@ const practiceRoutes = [
         c.now.ts,
         c.now.ts,
       );
-      const row = getPractice(c.db, lastId);
-      const practice = practiceView(c.db, row, c.member);
+      const row = await getPractice(c.db, lastId);
+      const practice = await practiceView(c.db, row, c.member);
       c.emit("practice.created", { practice, member: publicMember(c.member) });
-      return { practice, summary: practiceSummary(c, c.member.id) };
+      return { practice, summary: await practiceSummary(c, c.member.id) };
     },
   ],
-  ["GET", "/practices/:id", (c) => ({ practice: practiceView(c.db, getPractice(c.db, c.params.id), c.member) })],
+  ["GET", "/practices/:id", async (c) => ({ practice: await practiceView(c.db, await getPractice(c.db, c.params.id), c.member) })],
   [
     "PATCH",
     "/practices/:id",
-    (c) => {
-      const p = getPractice(c.db, c.params.id);
+    async (c) => {
+      const p = await getPractice(c.db, c.params.id);
       if (p.member_id !== c.member.id) throw forbidden("自分の練習報告だけ編集できます");
       const f = practiceFields(c, c.body, { partial: true });
       const keys = Object.keys(f);
       if (keys.length) {
-        c.db.run(
+        await c.db.run(
           `UPDATE practices SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
           ...keys.map((k) => f[k]),
           c.now.ts,
           p.id,
         );
       }
-      return { practice: practiceView(c.db, getPractice(c.db, p.id), c.member) };
+      return { practice: await practiceView(c.db, await getPractice(c.db, p.id), c.member) };
     },
   ],
   [
     "DELETE",
     "/practices/:id",
-    (c) => {
-      const p = getPractice(c.db, c.params.id);
+    async (c) => {
+      const p = await getPractice(c.db, c.params.id);
       if (p.member_id !== c.member.id && !c.isAdmin) throw forbidden("自分の練習報告だけ削除できます");
-      c.db.tx(() => {
-        c.db.run("DELETE FROM practice_likes WHERE practice_id = ?", p.id);
-        c.db.run("DELETE FROM practices WHERE id = ?", p.id);
+      await c.db.tx(async (tx) => {
+        await tx.run("DELETE FROM practice_likes WHERE practice_id = ?", p.id);
+        await tx.run("DELETE FROM practices WHERE id = ?", p.id);
       });
       return { ok: true };
     },
@@ -761,25 +811,25 @@ const practiceRoutes = [
   [
     "POST",
     "/practices/:id/like",
-    (c) => {
-      const p = getPractice(c.db, c.params.id);
-      const { changes } = c.db.run(
-        "INSERT OR IGNORE INTO practice_likes(practice_id, member_id, at) VALUES(?, ?, ?)",
+    async (c) => {
+      const p = await getPractice(c.db, c.params.id);
+      const { changes } = await c.db.run(
+        "INSERT INTO practice_likes(practice_id, member_id, at) VALUES(?, ?, ?) ON CONFLICT(practice_id, member_id) DO NOTHING",
         p.id,
         c.member.id,
         c.now.ts,
       );
       if (!changes) throw conflict("もうナイス！しています", "already_liked");
-      return { practice: practiceView(c.db, p, c.member) };
+      return { practice: await practiceView(c.db, p, c.member) };
     },
   ],
   [
     "DELETE",
     "/practices/:id/like",
-    (c) => {
-      const p = getPractice(c.db, c.params.id);
-      c.db.run("DELETE FROM practice_likes WHERE practice_id = ? AND member_id = ?", p.id, c.member.id);
-      return { practice: practiceView(c.db, p, c.member) };
+    async (c) => {
+      const p = await getPractice(c.db, c.params.id);
+      await c.db.run("DELETE FROM practice_likes WHERE practice_id = ? AND member_id = ?", p.id, c.member.id);
+      return { practice: await practiceView(c.db, p, c.member) };
     },
   ],
 ];
