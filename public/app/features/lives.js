@@ -384,24 +384,69 @@ async function openPosters() {
 }
 
 // ---------------------------------------------------------------- ホームカード
+// これからのライブを最大3件。その場で「行く／迷い中／行けない」を押せる
+function homeLiveItem(l) {
+  return html`<div class="lv-home-item" data-live="${l.id}">
+    <a class="lv-home-link" href="#/lives/${l.id}">
+      <div class="datebox lv-home-date">
+        <p class="datebox-m">${Number(l.date.slice(5, 7))}月</p>
+        <p class="datebox-d">${Number(l.date.slice(8))}</p>
+        <p class="datebox-w ${weekdayClass(l.date)}">${weekday(l.date)}</p>
+      </div>
+      <div class="grow lv-home-main">
+        <p class="strong ellipsis">${l.title}</p>
+        <p class="small muted ellipsis">${l.startTime ? `${l.startTime}〜 ・ ` : ""}📍${l.venue}</p>
+        <p class="small muted">${priceText(l) ? html`🎟 ${priceText(l)} ・ ` : ""}🎤 行く ${l.counts.go}人</p>
+      </div>
+      <span class="chip chip-purple lv-home-rel">${relDay(l.date)}</span>
+    </a>
+    <div class="lv-home-rsvp">
+      ${Object.entries(STATUS).map(
+        ([k, st]) => html`<button type="button" class="lv-mini ${st.cls} ${l.my?.status === k ? "on" : ""}" data-act="home-rsvp" data-id="${l.id}" data-status="${k}">${st.icon} ${st.short}</button>`,
+      )}
+    </div>
+  </div>`;
+}
+
 const homeLive = {
-  order: 55,
+  order: 14,
   render: async () => {
     const { lives } = await get("/lives");
-    const next = lives.find((l) => l.status !== "canceled");
-    if (!next) return "";
-    return html`<a class="card card-link lv-home" href="#/lives/${next.id}">
+    const next = lives.filter((l) => l.status !== "canceled").slice(0, 3);
+    if (!next.length) return "";
+    const unanswered = next.filter((l) => !l.my).length;
+    return html`<section class="card lv-home">
       <div class="card-head">
-        <p class="card-title"><span class="icon">🎤</span>${next.performer || "お笑いライブ"}のライブ</p>
-        <span class="chip chip-purple">${relDay(next.date)}</span>
+        <p class="card-title"><span class="icon">🎤</span>アミダラインのライブ</p>
+        <a class="card-sub" href="#/lives">すべて見る ›</a>
       </div>
-      <p class="strong">${next.title}</p>
-      <p class="small muted">${fmtDate(next.date)} ${timeText(next)} ・ 📍${next.venue}</p>
-      <p class="small">${priceText(next) ? html`🎟 ${priceText(next)}` : ""}</p>
-      <p class="small lv-home-foot">🎤 行く ${next.counts.go}人 ・ ${
-        next.my ? html`あなたは<b>${STATUS[next.my.status].short}</b>` : html`<b class="amber">まだ回答していません →</b>`
-      }</p>
-    </a>`;
+      ${unanswered ? html`<p class="small amber lv-home-ask">まだ回答していないライブが ${unanswered}件 あります</p>` : ""}
+      <div class="lv-home-list">${next.map(homeLiveItem)}</div>
+    </section>`;
+  },
+  bind: (el) => {
+    on(el, "click", "[data-act=home-rsvp]", (_, b) => {
+      const id = Number(b.dataset.id);
+      const status = b.dataset.status;
+      busy(b, async () => {
+        // ホームからの「行く」は取り置き1枚で登録（詳しくはライブ画面で変更できる）
+        const { live } = await put(`/lives/${id}/rsvp`, status === "go" ? { status, tickets: 1 } : { status });
+        const item = el.querySelector(`[data-live="${id}"]`);
+        const tmp = document.createElement("div");
+        mount(tmp, homeLiveItem(live));
+        item.replaceWith(tmp.firstElementChild);
+        const left = el.querySelectorAll(".lv-home-item").length - el.querySelectorAll(".lv-mini.on").length;
+        const ask = el.querySelector(".lv-home-ask");
+        if (ask) {
+          if (left > 0) ask.textContent = `まだ回答していないライブが ${left}件 あります`;
+          else ask.remove();
+        }
+        if (status === "go") {
+          celebrate();
+          toast("行く！で回答しました（取り置き1枚）。枚数はライブ画面で変更できます", { type: "success" });
+        } else toast("回答しました", { type: "success" });
+      });
+    });
   },
 };
 
