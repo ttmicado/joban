@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "joban-garapon",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "LOTTERY", "class_name": "Lottery" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Lottery"] }],
+  "vars": {
+    // LINE Developers で作成した LIFF ID（例: 2001234567-AbCdEfGh）
+    "LIFF_ID": "",
+    // LIFF を作成したチャネルのチャネルID（アクセストークン検証に使用）
+    "LINE_CHANNEL_ID": "",
+    // ローカル確認用のモックログイン。本番では必ず "false"
+    "ALLOW_MOCK": "false"
+  }
+  // 管理者キーは `npx wrangler secret put ADMIN_KEY` で設定
+}

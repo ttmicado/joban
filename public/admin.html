@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ガラポン管理</title>
+  <style>
+    :root { --bg: #1b0d2b; --fg: #fff4dc; --muted: #c9b8d8; --gold: #f6c445; --red: #d7263d; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font-family: "Hiragino Sans", system-ui, sans-serif; }
+    main { max-width: 640px; margin: 0 auto; }
+    h1 { color: var(--gold); font-size: 22px; }
+    section { background: rgba(255,255,255,.06); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+    h2 { font-size: 15px; margin: 0 0 10px; }
+    label { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 8px 0; font-size: 14px; }
+    input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #555; background: #0e0618; color: var(--fg); width: 50%; }
+    input[type=checkbox] { width: auto; }
+    button { font: inherit; font-weight: 700; padding: 10px 14px; border-radius: 8px; border: 0; cursor: pointer; background: var(--gold); color: #3b0610; }
+    button.danger { background: var(--red); color: #fff; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    td, th { padding: 6px 4px; border-bottom: 1px solid rgba(255,255,255,.1); text-align: left; }
+    .win { color: var(--gold); font-weight: 700; }
+    .muted { color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>ガラポン管理</h1>
+  <section>
+    <label>管理キー <input id="key" type="password" autocomplete="off" /></label>
+    <button id="load">読み込む</button>
+    <p class="muted" id="msg"></p>
+  </section>
+  <section>
+    <h2>設定</h2>
+    <label>玉の数（参加予定人数） <input id="total" type="number" min="1" /></label>
+    <label>金の玉（当選数） <input id="prizes" type="number" min="0" /></label>
+    <label>景品名 <input id="prizeName" /></label>
+    <label>エントリー受付中 <input id="open" type="checkbox" /></label>
+    <button id="save">設定を保存</button>
+  </section>
+  <section>
+    <h2>参加者 <span class="muted" id="summary"></span></h2>
+    <table><thead><tr><th>No</th><th>名前</th><th>結果</th></tr></thead><tbody id="rows"></tbody></table>
+  </section>
+  <section>
+    <h2>リセット</h2>
+    <div class="row">
+      <button class="danger" id="reset-results">抽選結果だけ消す</button>
+      <button class="danger" id="reset-all">エントリーも全部消す</button>
+    </div>
+  </section>
+</main>
+<script>
+  const $ = (s) => document.querySelector(s);
+  $("#key").value = sessionStorage.getItem("admin-key") || "";
+  async function call(path, body) {
+    sessionStorage.setItem("admin-key", $("#key").value);
+    const res = await fetch(path, {
+      method: body ? "POST" : "GET",
+      headers: { "X-Admin-Key": $("#key").value, "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json();
+    if (!res.ok) { $("#msg").textContent = data.message; throw new Error(data.message); }
+    $("#msg").textContent = "OK";
+    render(data);
+  }
+  function render(st) {
+    const c = st.config;
+    $("#total").value = c.total; $("#prizes").value = c.prizes; $("#prizeName").value = c.prizeName; $("#open").checked = c.open;
+    const list = Object.values(st.entries).sort((a, b) => a.no - b.no);
+    const drawn = list.filter((e) => e.result).length;
+    $("#summary").textContent = `エントリー ${list.length} / 抽選済み ${drawn}`;
+    $("#rows").innerHTML = "";
+    for (const e of list) {
+      const tr = document.createElement("tr");
+      const r = e.result ? (e.result.win ? "当選" : "ハズレ") : "未抽選";
+      tr.innerHTML = `<td>${e.no}</td><td></td><td class="${e.result?.win ? "win" : ""}">${r}</td>`;
+      tr.children[1].textContent = e.name;
+      $("#rows").append(tr);
+    }
+  }
+  $("#load").onclick = () => call("/api/admin/state");
+  $("#save").onclick = () => call("/api/admin/config", {
+    total: $("#total").value, prizes: $("#prizes").value, prizeName: $("#prizeName").value, open: $("#open").checked,
+  });
+  $("#reset-results").onclick = () => confirm("抽選結果をすべて消しますか？") && call("/api/admin/reset", { keepEntries: true });
+  $("#reset-all").onclick = () => confirm("エントリーと結果をすべて消しますか？") && call("/api/admin/reset", { keepEntries: false });
+  if ($("#key").value) call("/api/admin/state").catch(() => {});
+</script>
+</body>
+</html>
