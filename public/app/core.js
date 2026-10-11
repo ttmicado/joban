@@ -217,6 +217,9 @@ export async function render() {
   }
   cleanup = null;
   const view = $("#view");
+  // ページ移動時は開いているボトムシートを閉じる
+  $("#sheet-root").replaceChildren();
+  document.body.classList.remove("no-scroll");
   if (guard && (await guard(path))) return;
 
   let found = null;
