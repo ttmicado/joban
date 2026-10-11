@@ -132,6 +132,7 @@ async function listEvents(c, where, params, order, limit = 200) {
   const counts = await countsFor(c.db, ids);
   const mine = new Map();
   const games = new Map();
+  const guides = await guideIds(c.db, ids);
   if (ids.length) {
     const qs = ids.map(() => "?").join(",");
     for (const a of await c.db.all(`SELECT event_id, status FROM attendance WHERE member_id = ? AND event_id IN (${qs})`, c.member.id, ...ids)) {
@@ -148,6 +149,7 @@ async function listEvents(c, where, params, order, limit = 200) {
     game_id: games.get(r.id) || null,
     days: r.end_date ? dayCount(r.date, r.end_date) : 1,
     can_edit: canEditEvent(c, r),
+    hasGuide: guides.has(r.id),
   }));
 }
 
@@ -176,8 +178,10 @@ async function eventDetail(c, id) {
   const game = await c.db.one("SELECT id FROM games WHERE event_id = ? ORDER BY id LIMIT 1", event.id);
   const venue = event.venue ? await c.db.one("SELECT * FROM venues WHERE name = ?", event.venue) : null;
   const creator = event.created_by ? await c.db.one("SELECT * FROM members WHERE id = ?", event.created_by) : null;
+  const hasGuide = !!(await c.db.one("SELECT event_id FROM event_guides WHERE event_id = ?", event.id));
   return {
-    event: { ...event, counts, days: event.end_date ? dayCount(event.date, event.end_date) : 1 },
+    event: { ...event, counts, days: event.end_date ? dayCount(event.date, event.end_date) : 1, hasGuide },
+    hasGuide,
     attendance,
     unanswered,
     my: mine ? { status: mine.status, comment: mine.comment || "" } : null,
@@ -492,6 +496,207 @@ export function buildIcs(c, events, lives = []) {
   return lines.map(icsFold).join("\r\n") + "\r\n";
 }
 
+// ---------------------------------------------------------------- しおり（予定ごとのガイドブック）
+// event_guides.data は JSON: { title, subtitle, message, sections: [{ id, type, title, icon, note, ...中身 }] }
+
+export const GUIDE_TYPES = ["timeline", "stay", "checklist", "rooms", "text", "links"];
+export const GUIDE_LIMITS = {
+  sections: 20,
+  days: 10,
+  dayItems: 40,
+  checklist: 80,
+  rooms: 30,
+  roomMembers: 20,
+  links: 20,
+  json: 40000,
+};
+const GUIDE_DEFAULT_TITLE = { timeline: "旅程", stay: "宿泊先", checklist: "持ち物", rooms: "部屋割り", text: "メモ", links: "リンク" };
+const GUIDE_DEFAULT_ICON = { timeline: "🗓", stay: "🏠", checklist: "🎒", rooms: "🛏", text: "📝", links: "🔗" };
+
+const gStr = (val, label, max, opts) => v.str(val, label, { max, ...opts }) ?? "";
+// 改行を保つ文字列（本文など）。前後の空白だけ落とす
+function gText(val, label, max) {
+  if (val === undefined || val === null) return "";
+  if (typeof val !== "string") throw badRequest(`${label}の形式が不正です`);
+  const s = val.replace(/\r\n?/g, "\n").trim();
+  if (s.length > max) throw badRequest(`${label}は${max}文字以内にしてください`);
+  return s;
+}
+const gUrl = (val, label) => v.url(val, label) ?? "";
+function gArr(val, label, max) {
+  if (val === undefined || val === null) return [];
+  if (!Array.isArray(val)) throw badRequest(`${label}の形式が不正です`);
+  if (val.length > max) throw badRequest(`${label}は${max}件までにしてください`);
+  return val;
+}
+const gObj = (val) => (val && typeof val === "object" && !Array.isArray(val) ? val : {});
+
+// しおりの検証（未知のキーは捨てる。不正な値は 400）
+export function sanitizeGuide(input) {
+  const g = gObj(input);
+  if (JSON.stringify(g).length > GUIDE_LIMITS.json) throw badRequest("しおりの内容が長すぎます");
+  const out = {
+    title: gStr(g.title, "しおりのタイトル", 60),
+    subtitle: gStr(g.subtitle, "サブタイトル", 80),
+    message: gText(g.message, "ひとこと", 300),
+    sections: [],
+  };
+  const ids = new Set();
+  for (const [i, raw0] of gArr(g.sections, "セクション", GUIDE_LIMITS.sections).entries()) {
+    const s = gObj(raw0);
+    const n = `セクション${i + 1}`;
+    const type = v.oneOf(s.type, `${n}の種類`, GUIDE_TYPES, { required: true });
+    let id = typeof s.id === "string" && /^[A-Za-z0-9_-]{1,24}$/.test(s.id) ? s.id : `s${i + 1}`;
+    while (ids.has(id)) id = `${id.slice(0, 20)}_${i + 1}`;
+    ids.add(id);
+    const sec = {
+      id,
+      type,
+      title: gStr(s.title, `${n}の見出し`, 40) || GUIDE_DEFAULT_TITLE[type],
+      icon: gStr(s.icon, `${n}のアイコン`, 16) || GUIDE_DEFAULT_ICON[type],
+      note: gText(s.note, `${n}の補足`, 1000),
+    };
+    if (type === "timeline") {
+      sec.days = gArr(s.days, `${n}の日`, GUIDE_LIMITS.days).map((d0, di) => {
+        const d = gObj(d0);
+        return {
+          label: gStr(d.label, `${n}の日の見出し`, 40) || `${di + 1}日目`,
+          items: gArr(d.items, `${n}の予定`, GUIDE_LIMITS.dayItems)
+            .map((it0) => {
+              const it = gObj(it0);
+              return { time: gStr(it.time, `${n}の時刻`, 20), text: gStr(it.text, `${n}の予定`, 200) };
+            })
+            .filter((it) => it.time || it.text),
+        };
+      });
+    } else if (type === "stay") {
+      sec.name = gStr(s.name, `${n}の宿名`, 100);
+      sec.address = gStr(s.address, `${n}の住所`, 200);
+      sec.url = gUrl(s.url, `${n}の予約ページ`);
+      sec.mapUrl = gUrl(s.mapUrl, `${n}の地図URL`);
+      sec.checkin = gStr(s.checkin, `${n}のチェックイン`, 40);
+      sec.checkout = gStr(s.checkout, `${n}のチェックアウト`, 40);
+    } else if (type === "checklist") {
+      sec.items = gArr(s.items, `${n}の項目`, GUIDE_LIMITS.checklist)
+        .map((x) => gStr(x, `${n}の項目`, 100))
+        .filter(Boolean);
+    } else if (type === "rooms") {
+      sec.rooms = gArr(s.rooms, `${n}の部屋`, GUIDE_LIMITS.rooms).map((r0) => {
+        const r = gObj(r0);
+        return {
+          name: gStr(r.name, `${n}の部屋名`, 40),
+          members: gArr(r.members, `${n}のメンバー`, GUIDE_LIMITS.roomMembers)
+            .map((x) => gStr(x, `${n}のメンバー名`, 30))
+            .filter(Boolean),
+        };
+      }).filter((r) => r.name || r.members.length);
+    } else if (type === "text") {
+      sec.body = gText(s.body, `${n}の本文`, 3000);
+    } else if (type === "links") {
+      sec.links = gArr(s.links, `${n}のリンク`, GUIDE_LIMITS.links)
+        .map((l0) => {
+          const l = gObj(l0);
+          const url = gUrl(l.url, `${n}のリンクURL`);
+          return { label: gStr(l.label, `${n}のリンク名`, 60) || url, url };
+        })
+        .filter((l) => l.url);
+    }
+    out.sections.push(sec);
+  }
+  if (!out.title && !out.sections.length) throw badRequest("しおりのタイトルかセクションを入れてください");
+  return out;
+}
+
+async function guideIds(db, ids) {
+  if (!ids.length) return new Set();
+  const rows = await db.all(`SELECT event_id FROM event_guides WHERE event_id IN (${ids.map(() => "?").join(",")})`, ...ids);
+  return new Set(rows.map((r) => r.event_id));
+}
+
+async function readGuide(c, eventId) {
+  const row = await c.db.one("SELECT * FROM event_guides WHERE event_id = ?", eventId);
+  if (!row) return { guide: null, can_edit: !!c.isAdmin };
+  let guide = null;
+  try {
+    guide = sanitizeGuide(JSON.parse(row.data));
+  } catch {
+    guide = { title: "しおり", subtitle: "", message: "", sections: [] };
+  }
+  return { guide, updated_at: row.updated_at, can_edit: !!c.isAdmin };
+}
+
+// 初期データ: 白馬合宿（2027-02-13〜14）とそのしおり
+const sqlStr = (s) => `'${String(s).replace(/'/g, "''")}'`;
+const HAKUBA_NAME = "コテージ 白馬 ムジェーヴ";
+const HAKUBA_MAP = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(HAKUBA_NAME)}`;
+const HAKUBA_BOOKING = "https://www.agoda.com/sh-app/HmTdb46w6Jw";
+export const HAKUBA_GUIDE = {
+  title: "白馬合宿のしおり",
+  subtitle: "2027.2.13 SAT – 2.14 SUN",
+  message: "最高の2日間にしよう！",
+  sections: [
+    {
+      id: "schedule",
+      type: "timeline",
+      title: "旅程",
+      icon: "🗓",
+      days: [
+        { label: "2/13(土) 1日目", items: [{ time: "", text: "未定（管理者が追加します）" }] },
+        { label: "2/14(日) 2日目", items: [{ time: "", text: "未定（管理者が追加します）" }] },
+      ],
+    },
+    {
+      id: "stay",
+      type: "stay",
+      title: "宿泊先",
+      icon: "🏠",
+      name: HAKUBA_NAME,
+      url: HAKUBA_BOOKING,
+      mapUrl: HAKUBA_MAP,
+      checkin: "",
+      checkout: "",
+    },
+    {
+      id: "items",
+      type: "checklist",
+      title: "持ち物",
+      icon: "🎒",
+      items: [
+        "グローブ",
+        "スパイク／トレーニングシューズ",
+        "ユニフォーム・練習着",
+        "防寒着（ダウン・手袋・ニット帽）",
+        "雪道用の靴・長靴",
+        "着替え（2日分）",
+        "パジャマ・部屋着",
+        "洗面用具・タオル",
+        "保険証",
+        "常備薬",
+        "スマホの充電器",
+        "カイロ",
+      ],
+      note: "白馬の2月は氷点下になります。あたたかい服装で！",
+    },
+    { id: "rooms", type: "rooms", title: "部屋割り", icon: "🛏", rooms: [], note: "決まり次第お知らせします" },
+    { id: "cost", type: "text", title: "費用", icon: "💴", body: "決まり次第お知らせします" },
+    {
+      id: "notes",
+      type: "text",
+      title: "注意事項",
+      icon: "⚠️",
+      body: [
+        "・集合時間は厳守！遅れそうなときは早めに連絡してください",
+        "・雪道の運転に注意。車はスタッドレスタイヤかチェーンを必ず用意",
+        "・路面凍結に注意。歩くときも滑りにくい靴で",
+        "・体調が悪いときは無理をしない",
+        "・コテージは貸切です。ゴミの分別・夜の騒音に気をつけましょう",
+        "・忘れ物がないよう、チェックアウト前に部屋を確認",
+      ].join("\n"),
+    },
+    { id: "contact", type: "text", title: "連絡先", icon: "📞", body: "" },
+  ],
+};
+
 function safeEqual(a, b) {
   a = String(a || "");
   b = String(b || "");
@@ -560,6 +765,33 @@ CREATE TABLE IF NOT EXISTS poll_answers (
 ALTER TABLE events ADD COLUMN IF NOT EXISTS end_date TEXT;   -- 最終日（合宿など複数日。NULL なら1日）
 ALTER TABLE events ADD COLUMN IF NOT EXISTS fee BIGINT;      -- 参加費（円）
 ALTER TABLE events ADD COLUMN IF NOT EXISTS fee_note TEXT;   -- 参加費のメモ（宿泊・食事込み など）
+`,
+    },
+    {
+      // しおり（予定ごとのガイドブック。data は JSON。管理者が編集）
+      id: "schedule-003",
+      sql: `
+CREATE TABLE IF NOT EXISTS event_guides (
+  event_id BIGINT PRIMARY KEY,
+  data TEXT NOT NULL,
+  updated_by BIGINT,
+  updated_at BIGINT NOT NULL
+);
+`,
+    },
+    {
+      // 初期データ: 白馬合宿 2027-02-13(土)〜14(日) とそのしおり（同じ日付・タイトルの予定があれば入れない）
+      id: "schedule-004",
+      sql: `
+INSERT INTO events(type, title, date, end_date, venue, venue_url, note, status, created_by, created_at, updated_at)
+SELECT 'event', '白馬合宿', '2027-02-13', '2027-02-14', ${sqlStr(HAKUBA_NAME)}, ${sqlStr(HAKUBA_MAP)},
+  '1泊2日の合宿です。詳しくはしおりを見てください', 'scheduled', NULL, 0, 0
+WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.date = '2027-02-13' AND e.title = '白馬合宿');
+INSERT INTO event_guides(event_id, data, updated_by, updated_at)
+SELECT e.id, ${sqlStr(JSON.stringify(HAKUBA_GUIDE))}, NULL, 0
+FROM events e WHERE e.date = '2027-02-13' AND e.title = '白馬合宿'
+ORDER BY e.id LIMIT 1
+ON CONFLICT (event_id) DO NOTHING;
 `,
     },
   ],
@@ -665,6 +897,7 @@ ALTER TABLE events ADD COLUMN IF NOT EXISTS fee_note TEXT;   -- 参加費のメ�
         const hasWakeups = !!(await c.db.one("SELECT to_regclass('wakeups') AS t")).t;
         await c.db.tx(async () => {
           await c.db.run("DELETE FROM attendance WHERE event_id = ?", e.id);
+          await c.db.run("DELETE FROM event_guides WHERE event_id = ?", e.id);
           // 起床報告（community 機能）も一緒に消す
           if (hasWakeups) await c.db.run("DELETE FROM wakeups WHERE event_id = ?", e.id);
           await c.db.run("DELETE FROM events WHERE id = ?", e.id);
@@ -674,6 +907,38 @@ ALTER TABLE events ADD COLUMN IF NOT EXISTS fee_note TEXT;   -- 参加費のメ�
       },
     ],
     ["PUT", "/events/:id/rsvp", setRsvp],
+
+    // ---------------- しおり
+    ["GET", "/events/:id/guide", async (c) => readGuide(c, (await getEvent(c.db, c.params.id)).id)],
+    [
+      "PUT",
+      "/events/:id/guide",
+      async (c) => {
+        const e = await getEvent(c.db, c.params.id);
+        const body = gObj(c.body);
+        const guide = sanitizeGuide(body.guide ?? body.data ?? body);
+        await c.db.run(
+          `INSERT INTO event_guides(event_id, data, updated_by, updated_at) VALUES(?, ?, ?, ?)
+           ON CONFLICT(event_id) DO UPDATE SET data = excluded.data, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+          e.id,
+          JSON.stringify(guide),
+          c.member.id,
+          c.now.ts,
+        );
+        return await readGuide(c, e.id);
+      },
+      { auth: "admin" },
+    ],
+    [
+      "DELETE",
+      "/events/:id/guide",
+      async (c) => {
+        const e = await getEvent(c.db, c.params.id);
+        await c.db.run("DELETE FROM event_guides WHERE event_id = ?", e.id);
+        return { ok: true };
+      },
+      { auth: "admin" },
+    ],
 
     // ---------------- 球場
     ["GET", "/venues", async (c) => ({ venues: await c.db.all("SELECT * FROM venues ORDER BY name") })],

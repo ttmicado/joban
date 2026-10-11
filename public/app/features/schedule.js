@@ -1,6 +1,7 @@
 // 日程: 予定一覧・カレンダー・詳細と出欠・予定の作成編集・球場・日程調整・カレンダー連携
 import { appUrl, del, get, html, isAdmin, mount, navigate, on, patch, post, put, raw, setHeader } from "../core.js";
 import { fmtFee } from "../lib/flex.js";
+import { bindGuide, guideCardHtml, prepareGuideOpen, renderGuideEdit, renderGuidePage } from "./guide.js";
 import {
   avatar,
   busy,
@@ -414,6 +415,7 @@ function eventRow(e, today) {
         ${typeChip(e.type)}
         ${canceled ? html`<span class="chip chip-red">中止</span>` : ""}
         ${!canceled && n >= 0 && n <= 7 ? html`<span class="chip chip-amber">${cd.label}</span>` : ""}
+        ${e.hasGuide ? html`<span class="chip sch-chip-guide">📖 しおり</span>` : ""}
       </div>
       <p class="list-title sch-title">${e.title}</p>
       ${multiDay(e) ? html`<p class="list-sub sch-period-sub">📅 ${periodText(e)} <b>${nightsText(e)}</b></p>` : ""}
@@ -628,7 +630,7 @@ function rsvpButtons(current, { compact = false, attr = "data-rsvp" } = {}) {
   </div>`;
 }
 
-function detailHtml(d, admin) {
+function detailHtml(d, admin, guide = null) {
   const e = d.event;
   const canceled = e.status === "canceled";
   const cd = countdown(e.date, d.today, lastDay(e));
@@ -663,6 +665,8 @@ function detailHtml(d, admin) {
         : html`<p class="muted small">時間は未定です</p>`}
       ${fee ? html`<div class="sch-fee-box"><p class="sch-time-label">💴 参加費</p><p class="sch-fee-val">${fmtFee(e.fee) ? html`<span class="num">${fmtFee(e.fee)}</span>` : ""}${e.fee_note ? html`<span class="sch-fee-note">${e.fee_note}</span>` : ""}</p></div>` : ""}
     </section>
+
+    ${guide || (admin && e.type === "event") ? guideCardHtml(e, guide, { admin }) : ""}
 
     <section class="list sch-info">
       ${e.meet_place ? html`<div class="list-item"><span class="sch-ic">📍</span><div class="list-main"><p class="list-sub">集合場所</p><p class="list-title">${e.meet_place}</p></div></div>` : ""}
@@ -716,6 +720,7 @@ function detailHtml(d, admin) {
               : html`<button type="button" class="btn" data-act="cancel">🌧 中止</button>`}
             <button type="button" class="btn sch-danger" data-act="delete">🗑 削除</button>
           </div>
+          ${admin ? html`<a class="btn btn-block sch-guide-admin" href="#/schedule/${e.id}/guide/edit">📖 ${guide ? "しおりを編集" : "しおりを作る"}</a>` : ""}
         </section>`
       : ""}`;
 }
@@ -769,10 +774,16 @@ async function proxyAllSheet(d, apply) {
 async function renderDetail(view, { params }) {
   const admin = isAdmin();
   setHeader({ title: "予定", back: "/schedule" });
-  let d = await get(`/events/${encodeURIComponent(params.id)}`);
+  const [first0, g] = await Promise.all([
+    get(`/events/${encodeURIComponent(params.id)}`),
+    get(`/events/${encodeURIComponent(params.id)}/guide`).catch(() => ({ guide: null })),
+  ]);
+  let d = first0;
+  const guide = g?.guide || null;
+  prepareGuideOpen(d.event.id);
   const draw = (first = false) => {
     setHeader({ title: d.event.type === "event" ? "イベント" : typeOf(d.event.type).label + "の予定", back: "/schedule" });
-    mount(view, detailHtml(d, admin));
+    mount(view, detailHtml(d, admin, guide));
     if (first) countUp(view);
   };
   draw(true);
@@ -791,6 +802,7 @@ async function renderDetail(view, { params }) {
   };
 
   const offs = [
+    bindGuide(view),
     on(view, "click", "[data-rsvp]", (_, b) =>
       busy(b, async () => {
         const status = b.dataset.rsvp;
@@ -1331,7 +1343,7 @@ function nextCardHtml(d) {
       <div class="sch-cd big ${cd.n === 0 ? "today" : ""}">${countdownHtml(cd)}</div>
       <div class="sch-next-body">
         <p class="sch-next-title">${e.title}</p>
-        <p class="sch-next-date num">${periodText(e)}${multiDay(e) ? html` <span class="sch-nights chip">${nightsText(e)}</span>` : ""}</p>
+        <p class="sch-next-date num">${periodText(e)}${multiDay(e) ? html` <span class="sch-nights chip">${nightsText(e)}</span>` : ""}${e.hasGuide ? html` <span class="chip sch-chip-guide">📖 しおり</span>` : ""}</p>
       </div>
       <span class="chev">›</span>
     </a>
@@ -1387,6 +1399,8 @@ export default {
     "/schedule": renderList,
     "/schedule/venues": renderVenues,
     "/schedule/:id": renderDetail,
+    "/schedule/:id/guide": renderGuidePage,
+    "/schedule/:id/guide/edit": renderGuideEdit,
     "/polls": renderPolls,
     "/polls/:id": renderPoll,
     "/calendar": renderCalendar,

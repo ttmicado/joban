@@ -54,7 +54,8 @@ test("一覧（これから・過去・月）と編集・中止・削除", async
   await admin.post("/events", { date: "2026-11-03", title: "大会", type: "game" });
 
   const up = await taro.get("/events?range=upcoming");
-  assert.deepEqual(up.body.events.map((e) => e.title), ["練習試合", "大会"]);
+  // 初期データの白馬合宿（2027-02-13〜14）も「これから」に入る
+  assert.deepEqual(up.body.events.map((e) => e.title), ["練習試合", "大会", "白馬合宿"]);
   assert.deepEqual(up.body.events[0].counts, { yes: 0, maybe: 0, no: 0 });
   const past = await taro.get("/events?range=past");
   assert.deepEqual(past.body.events.map((e) => e.id), [b.id]);
@@ -122,8 +123,9 @@ test("出欠の登録・更新・集計・代理入力", async () => {
   assert.deepEqual(list.body.events[0].counts, { yes: 1, maybe: 1, no: 1 });
 
   // 未回答（ホーム用）
-  assert.equal((await admin.get("/events/pending")).body.count, 1);
-  assert.equal((await taro.get("/events/pending")).body.count, 0);
+  // 初期データの白馬合宿も未回答に数える
+  assert.equal((await admin.get("/events/pending")).body.count, 2);
+  assert.equal((await taro.get("/events/pending")).body.count, 1);
   const next = await taro.get("/events/next");
   assert.equal(next.body.event.id, e.id);
 
@@ -466,4 +468,117 @@ test("ics: 複数日のイベントは終日（DTEND は最終日の翌日）・
   assert.match(l2, /SUMMARY:【中止】🎤 中止ライブ/);
   assert.match(l2, /DTSTART;VALUE=DATE:20261110/);
   assert.match(l2, /STATUS:CANCELLED/);
+});
+
+// ---------------------------------------------------------------- しおり
+
+const HAKUBA_MAP = "https://www.google.com/maps/search/?api=1&query=%E3%82%B3%E3%83%86%E3%83%BC%E3%82%B8%20%E7%99%BD%E9%A6%AC%20%E3%83%A0%E3%82%B8%E3%82%A7%E3%83%BC%E3%83%B4";
+
+test("初期データ: 白馬合宿（2027-02-13〜14）としおりが入っている・2回マイグレーションしても重複しない", async () => {
+  const { t, taro } = await setup();
+  const list = (await taro.get("/events")).body.events.filter((e) => e.title === "白馬合宿");
+  assert.equal(list.length, 1);
+  const camp = list[0];
+  assert.equal(camp.type, "event");
+  assert.equal(camp.date, "2027-02-13");
+  assert.equal(camp.end_date, "2027-02-14");
+  assert.equal(camp.days, 2);
+  assert.equal(camp.venue, "コテージ 白馬 ムジェーヴ");
+  assert.equal(camp.venue_url, HAKUBA_MAP);
+  assert.equal(camp.status, "scheduled");
+  assert.equal(camp.created_by, null);
+  assert.equal(camp.hasGuide, true);
+  assert.ok(camp.note.includes("しおり"));
+
+  const d = (await taro.get(`/events/${camp.id}`)).body;
+  assert.equal(d.hasGuide, true);
+  assert.equal(d.event.hasGuide, true);
+
+  const g = (await taro.get(`/events/${camp.id}/guide`)).body;
+  assert.equal(g.can_edit, false);
+  assert.equal(g.guide.title, "白馬合宿のしおり");
+  assert.equal(g.guide.subtitle, "2027.2.13 SAT – 2.14 SUN");
+  assert.equal(g.guide.message, "最高の2日間にしよう！");
+  assert.deepEqual(g.guide.sections.map((s) => s.type), ["timeline", "stay", "checklist", "rooms", "text", "text", "text"]);
+  assert.deepEqual(g.guide.sections.map((s) => s.title), ["旅程", "宿泊先", "持ち物", "部屋割り", "費用", "注意事項", "連絡先"]);
+  const stay = g.guide.sections.find((s) => s.type === "stay");
+  assert.equal(stay.name, "コテージ 白馬 ムジェーヴ");
+  assert.equal(stay.url, "https://www.agoda.com/sh-app/HmTdb46w6Jw");
+  assert.equal(stay.mapUrl, HAKUBA_MAP);
+  assert.equal(g.guide.sections[0].days.length, 2);
+  assert.ok(g.guide.sections[2].items.includes("グローブ"));
+  assert.ok(g.guide.sections[2].items.includes("保険証"));
+
+  // マイグレーションをやり直しても（同じ DB で app を作り直す）重複しない
+  const { createTeamApp } = await import("../src/team/app.js");
+  await t.db.run("DELETE FROM _migrations WHERE id IN ('schedule-003', 'schedule-004')");
+  const app2 = createTeamApp({ db: t.db, env: {}, features: allFeatures, clock: () => Date.now(), log: { error() {}, warn() {}, info() {} } });
+  await app2.ready();
+  const again = await t.db.all("SELECT id FROM events WHERE date = '2027-02-13' AND title = '白馬合宿'");
+  assert.equal(again.length, 1);
+  assert.equal((await t.db.all("SELECT event_id FROM event_guides")).length, 1);
+  assert.equal((await t.db.one("SELECT COUNT(*) AS n FROM _migrations WHERE id = 'schedule-004'")).n, 1);
+});
+
+test("しおり: 取得・管理者だけが保存/削除・予定削除で消える", async () => {
+  const { admin, taro } = await setup();
+  const e = (await taro.post("/events", { type: "event", title: "飲み会", date: "2026-11-20" })).body.event;
+  // しおりなし
+  assert.deepEqual((await taro.get(`/events/${e.id}/guide`)).body.guide, null);
+  assert.equal((await taro.get(`/events/${e.id}`)).body.hasGuide, false);
+  assert.equal((await taro.get("/events")).body.events.find((x) => x.id === e.id).hasGuide, false);
+  assert.equal((await taro.get("/events/99999/guide")).status, 404);
+
+  const guide = {
+    title: "飲み会のしおり",
+    subtitle: "11.20",
+    message: "楽しもう\n2行目",
+    secret: "捨てられる",
+    sections: [
+      { id: "tl", type: "timeline", title: "旅程", icon: "🗓", days: [{ label: "当日", items: [{ time: "19:00", text: "乾杯", extra: 1 }] }] },
+      { type: "checklist", items: ["財布", "", "スマホ"] },
+      { id: "r", type: "rooms", rooms: [{ name: "A卓", members: ["田代", "河村"] }] },
+      { id: "l", type: "links", links: [{ label: "お店", url: "https://example.com/" }] },
+      { id: "x", type: "text", title: "メモ", body: "1行目\n2行目" },
+    ],
+  };
+  // 登録者でも一般メンバーは 403（しおりは管理者だけ）
+  assert.equal((await taro.put(`/events/${e.id}/guide`, { guide })).status, 403);
+  const r = await admin.put(`/events/${e.id}/guide`, { guide });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.can_edit, true);
+  const saved = r.body.guide;
+  assert.equal(saved.secret, undefined);
+  assert.equal(saved.message, "楽しもう\n2行目");
+  assert.equal(saved.sections[0].days[0].items[0].extra, undefined);
+  assert.deepEqual(saved.sections[0].days[0].items[0], { time: "19:00", text: "乾杯" });
+  assert.equal(saved.sections[1].title, "持ち物"); // 見出しが空なら種類の既定
+  assert.deepEqual(saved.sections[1].items, ["財布", "スマホ"]);
+  assert.deepEqual(saved.sections[2].rooms, [{ name: "A卓", members: ["田代", "河村"] }]);
+  assert.equal(new Set(saved.sections.map((s) => s.id)).size, 5);
+  assert.equal((await taro.get(`/events/${e.id}/guide`)).body.guide.title, "飲み会のしおり");
+  assert.equal((await taro.get(`/events/${e.id}`)).body.event.hasGuide, true);
+
+  // 検証
+  const bad = (sections, extra = {}) => admin.put(`/events/${e.id}/guide`, { guide: { title: "x", sections, ...extra } });
+  assert.equal((await bad([{ type: "html", body: "<b>" }])).status, 400);
+  assert.equal((await bad([{ type: "links", links: [{ label: "x", url: "javascript:alert(1)" }] }])).status, 400);
+  assert.equal((await bad([{ type: "stay", url: "ftp://example.com" }])).status, 400);
+  assert.equal((await bad([{ type: "text", body: "あ".repeat(3001) }])).status, 400);
+  assert.equal((await bad([], { title: "あ".repeat(61) })).status, 400);
+  assert.equal((await bad(Array.from({ length: 21 }, () => ({ type: "text" })))).status, 400);
+  assert.equal((await bad([{ type: "checklist", items: Array.from({ length: 81 }, (_, i) => `x${i}`) }])).status, 400);
+  assert.equal((await bad("x")).status, 400);
+  // 失敗しても元のしおりは残る
+  assert.equal((await taro.get(`/events/${e.id}/guide`)).body.guide.title, "飲み会のしおり");
+
+  // 削除は管理者だけ
+  assert.equal((await taro.del(`/events/${e.id}/guide`)).status, 403);
+  assert.equal((await admin.del(`/events/${e.id}/guide`)).status, 200);
+  assert.equal((await taro.get(`/events/${e.id}/guide`)).body.guide, null);
+
+  // 予定を削除するとしおりも消える
+  await admin.put(`/events/${e.id}/guide`, { guide });
+  assert.equal((await taro.del(`/events/${e.id}`)).status, 200);
+  assert.equal((await taro.get(`/events/${e.id}/guide`)).status, 404);
 });
