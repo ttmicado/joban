@@ -1,13 +1,5 @@
 /* stats 機能のスタイル（接頭辞 st-） */
 
-/* シーズン切り替え */
-.st-seasons { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: -2px -16px; padding: 2px 16px; }
-.st-seasons::-webkit-scrollbar { display: none; }
-.st-season {
-  flex: none; min-height: 36px; padding: 6px 16px; border-radius: 99px; display: inline-flex; align-items: center;
-  border: 1px solid var(--line-2); background: var(--bg-2); color: var(--muted); font-family: var(--num); font-size: 18px; letter-spacing: 0.04em;
-}
-.st-season.active { background: var(--amber); border-color: var(--amber); color: #2b1d00; box-shadow: 0 4px 14px rgba(255, 200, 61, 0.3); }
 .st-qualify { text-align: center; }
 .st-qualify b { color: var(--text); font-size: 16px; font-weight: 400; }
 .st-body { gap: 14px; }
@@ -166,3 +158,7 @@
 /* ホームカード */
 .st-home-line { margin-top: 10px; font-size: 13px; font-weight: 700; color: var(--green); }
 .st-home-leaders .segmented { margin-bottom: 2px; }
+
+/* 部門ジャンプ（ランキングが長いので先頭から目当ての部門へ） */
+.st-jump .chip-tab { min-height: 40px; cursor: pointer; }
+.st-cat { scroll-margin-top: 72px; }

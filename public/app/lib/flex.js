@@ -308,7 +308,9 @@ export function listBubble(opts = {}) {
   const contents = [];
   if (has(opts.body)) contents.push(text(opts.body, { size: "sm", color: COLORS.text }));
   (opts.sections || []).forEach((s, i) => {
-    if (i > 0 || contents.length) contents.push({ type: "separator", margin: "lg", color: COLORS.line });
+    // 区切り線を入れる前に「前に何かあるか」を判定する（入れた後だと常に真になる）
+    const hasBefore = i > 0 || contents.length > 0;
+    if (hasBefore) contents.push({ type: "separator", margin: "lg", color: COLORS.line });
     const inner = [text(s.heading, { size: "sm", weight: "bold", color: s.color || COLORS.text })];
     if (s.rows?.length) {
       s.rows.forEach(([l, r], j) =>
@@ -329,7 +331,7 @@ export function listBubble(opts = {}) {
     } else {
       inner.push(text(s.empty || "なし", { size: "sm", color: COLORS.faint }));
     }
-    contents.push(box("vertical", inner, { spacing: "sm", margin: i > 0 || contents.length ? "lg" : "none" }));
+    contents.push(box("vertical", inner, { spacing: "sm", margin: hasBefore ? "lg" : "none" }));
   });
   if (!contents.length) contents.push(text(" ", { size: "xs" }));
   return bubble({

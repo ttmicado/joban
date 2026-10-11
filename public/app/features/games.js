@@ -1,11 +1,14 @@
 // 試合結果・スコア・スタメン・打撃/投手成績の入力（games 機能）
-import { $, appUrl, del, get, html, isAdmin, mount, navigate, on, patch, post, put, setHeader, shareToLine, state } from "../core.js";
+import { $, appUrl, del, get, html, isAdmin, mount, navigate, on, patch, post, put, raw, setHeader, state } from "../core.js";
 import {
   avatar,
   bindSteppers,
   busy,
   celebrate,
+  chipTabs,
   confirmDialog,
+  countUp,
+  fab,
   empty,
   fmtDate,
   memberLabel,
@@ -13,6 +16,7 @@ import {
   readForm,
   relDay,
   segmented,
+  share,
   sheet,
   stepper,
   toast,
@@ -76,7 +80,8 @@ function kindChip(kind) {
   return html`<span class="chip ${cls}">${label}</span>`;
 }
 
-function resultMark(r, { big = false } = {}) {
+function resultMark(r, { big = false, live = false } = {}) {
+  if (live) return html`<span class="result gm-result-live ${big ? "gm-result-big" : ""}" aria-label="試合中">LIVE</span>`;
   if (!r) return html`<span class="result gm-result-none ${big ? "gm-result-big" : ""}">−</span>`;
   return html`<span class="result result-${r} ${big ? "gm-result-big" : ""}">${RESULT_LABEL[r]}</span>`;
 }
@@ -113,37 +118,6 @@ function scoreboard(g, { name = teamName(), hits = null, theirHits = null, mini 
       </tbody>
     </table>
   </div>`;
-}
-
-// 数字のカウントアップ: <span data-count="8">0</span>（data-fmt="rate" で .667 形式）
-function countUp(root) {
-  const els = root.querySelectorAll("[data-count]");
-  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  els.forEach((el) => {
-    const to = Number(el.dataset.count);
-    const fmt = el.dataset.fmt === "rate" ? (x) => fmtRate(x) : (x) => String(Math.round(x));
-    if (reduce || !Number.isFinite(to)) return (el.textContent = Number.isFinite(to) ? fmt(to) : "-");
-    const t0 = performance.now();
-    const dur = 650 + Math.min(500, Math.abs(to) * 25);
-    const step = (t) => {
-      const p = Math.min(1, (t - t0) / dur);
-      const e = 1 - Math.pow(1 - p, 3);
-      el.textContent = fmt(to * e);
-      if (p < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-  });
-}
-
-async function share(messages) {
-  try {
-    const ok = await shareToLine(messages);
-    if (ok) toast("LINEに送りました", { type: "success" });
-    else if (state.mock) toast("LINEアプリで開くと共有できます（テスト環境）");
-    else toast("この環境ではLINE共有が使えません");
-  } catch (err) {
-    toastError(err);
-  }
 }
 
 // 打撃のひとこと「3打数2安打1本塁打」
@@ -252,21 +226,19 @@ async function renderList(view, { query }) {
 
   mount(
     view,
-    html`<div class="gm-seasons" role="tablist">
-        ${d.seasons.map((y) => html`<a class="gm-season-tab ${y === d.season ? "active" : ""}" href="#/games?season=${y}">${y}</a>`)}
-      </div>
+    html`${d.seasons.length > 1 ? chipTabs(d.seasons.map((y) => [`#/games?season=${y}`, y, y === d.season]), { label: "シーズン" }) : ""}
       <section class="gm-season">
         <p class="gm-season-kicker">${d.season} SEASON</p>
         <div class="gm-season-wld">
           <div><span class="num gm-led green" data-count="${s.win}">0</span><small>勝</small></div>
           <div><span class="num gm-led red" data-count="${s.lose}">0</span><small>敗</small></div>
-          <div><span class="num gm-led" data-count="${s.draw}">0</span><small>分</small></div>
+          <div><span class="num gm-led draw" data-count="${s.draw}">0</span><small>分</small></div>
         </div>
         <div class="gm-season-sub">
           <div><small>勝率</small><span class="num" data-count="${s.winPct ?? "x"}" data-fmt="rate">-</span></div>
           <div><small>得点</small><span class="num" data-count="${s.runs}">0</span></div>
           <div><small>失点</small><span class="num" data-count="${s.allowed}">0</span></div>
-          <div><small>得失差</small><span class="num ${s.runs - s.allowed >= 0 ? "green" : "red"}">${s.runs - s.allowed > 0 ? "+" : ""}${s.runs - s.allowed}</span></div>
+          <div><small>得失差</small><span class="num ${s.runs - s.allowed > 0 ? "green" : s.runs - s.allowed < 0 ? "red" : ""}">${s.runs - s.allowed > 0 ? "+" : ""}${s.runs - s.allowed}</span></div>
         </div>
         ${streak ? html`<p class="gm-streak ${streak.r}">${streak.r === "win" ? `🔥 ${streak.n}連勝中！` : `💪 ${streak.n}連敗中…次で止めよう！`}</p>` : ""}
       </section>
@@ -274,18 +246,18 @@ async function renderList(view, { query }) {
         ? html`<div class="list gm-list">
             ${d.games.map(
               (g) => html`<a class="list-item gm-row" href="#/games/${g.id}">
-                ${resultMark(g.result)}
+                ${resultMark(g.result, { live: g.status === "draft" })}
                 <div class="list-main">
                   <p class="list-title ellipsis">vs ${g.opponent}</p>
                   <p class="list-sub">${fmtDate(g.date)}${g.venue ? html` ・ ${g.venue}` : ""}</p>
                   <p class="gm-row-chips">${kindChip(g.kind)}${g.status === "draft" ? html`<span class="chip chip-amber gm-draft">入力中</span>` : ""}${g.recorded ? html`<span class="chip chip-green">記録済</span>` : ""}</p>
                 </div>
-                <span class="num gm-row-score ${g.result || ""}">${scoreText(g)}</span>
+                <span class="num gm-row-score ${g.status === "draft" ? "" : g.result || ""}">${scoreText(g)}</span>
               </a>`,
             )}
           </div>`
         : empty(admin ? "まだ試合がありません。右下の＋から最初の試合を作りましょう！" : "まだ試合がありません。プレイボールを待っています！", { icon: "🏟" })}
-      ${admin ? html`<button class="fab" data-act="create" aria-label="試合を作成">＋</button>` : ""}`,
+      ${admin ? fab({ label: "試合を作成", short: "試合", act: "create" }) : ""}`,
   );
   countUp(view);
   return on(view, "click", "[data-act=create]", () => openCreate());
@@ -395,6 +367,7 @@ async function renderDetail(view, { params, query }) {
   const id = Number(params.id);
   const admin = isAdmin();
   let tab = query.tab || "batting";
+  setHeader({ title: "試合", back: "/games" });
   let d = await get(`/games/${id}`);
   let firstDraw = true;
 
@@ -417,14 +390,14 @@ async function renderDetail(view, { params, query }) {
     });
     mount(
       view,
-      html`<section class="gm-hero gm-hero-${res || "none"}">
+      html`<section class="gm-hero gm-hero-${g.status === "draft" ? "none" : res || "none"}">
           <div class="gm-hero-top">
             ${kindChip(g.kind)}
             ${g.status === "final" ? html`<span class="chip chip-green">確定</span>` : html`<span class="chip chip-amber">入力中</span>`}
             <span class="spacer"></span>
             <span class="small muted">${fmtDate(g.date, { year: true })}</span>
           </div>
-          <p class="gm-hero-word ${firstDraw ? "pop" : ""}">${res ? { win: "WIN", lose: "LOSE", draw: "DRAW" }[res] : "PLAY BALL"}</p>
+          <p class="gm-hero-word ${firstDraw ? "pop" : ""}">${g.status === "draft" ? (g.our_score === null ? "PLAY BALL" : "LIVE") : { win: "WIN", lose: "LOSE", draw: "DRAW" }[res] || "GAME SET"}</p>
           <div class="gm-hero-score">
             <div class="gm-hero-team"><span>${teamName()}</span><b class="num" data-count="${g.our_score ?? "x"}">${g.our_score ?? "-"}</b></div>
             <span class="gm-hero-dash">−</span>
@@ -693,7 +666,7 @@ async function renderScore(view, { params }) {
                 ${stepper(`${order[1]}Total`, label[order[1]], order[1] === "us" ? g.our_score ?? 0 : g.their_score ?? 0, { max: 999 })}
               </div>
               <p class="hint">イニングごとの得点が分からないときは合計だけでもOK</p>`}
-          <div class="gm-savebar"><button class="btn btn-primary btn-block" type="submit">スコアを保存</button></div>
+          <div class="savebar"><button class="btn btn-primary btn-block" type="submit">スコアを保存</button></div>
         </form>`,
     );
     updateTotals();
@@ -815,7 +788,7 @@ async function renderLineup(view, { params }) {
               )}
             </div>`
           : html`<p class="muted small center">全員が入っています</p>`}
-        <div class="gm-savebar"><button class="btn btn-primary btn-block" data-act="save">📣 スタメンを保存して発表</button></div>`,
+        <div class="savebar"><button class="btn btn-primary btn-block" data-act="save">📣 スタメンを保存して発表</button></div>`,
     );
   };
   draw();
@@ -913,7 +886,7 @@ async function renderRecord(view, { params, query }) {
         </div>
       </div>
       ${d.canEdit ? "" : html`<p class="chip chip-red" style="align-self:flex-start">${g.status === "final" ? "確定済みのため編集できません（管理者に連絡してください）" : "本人か管理者だけが編集できます"}</p>`}
-      <form class="form" id="rec-form">
+      <form class="form ${d.canEdit ? "" : "gm-locked"}" id="rec-form" ${d.canEdit ? "" : raw("inert")}>
         <p class="section-title">🏏 打撃</p>
         ${segmented("mode", [["ab", "1打席ずつ記録"], ["num", "数字で入力"]], mode)}
         ${abSection()}
@@ -938,7 +911,7 @@ async function renderRecord(view, { params, query }) {
             </div>
           </div>
         </section>
-        ${d.canEdit ? html`<div class="gm-savebar"><button class="btn btn-primary btn-block" type="submit">💾 成績を保存</button></div>` : ""}
+        ${d.canEdit ? html`<div class="savebar"><button class="btn btn-primary btn-block" type="submit">💾 成績を保存</button></div>` : ""}
       </form>`,
   );
   const form = $("#rec-form", view);
@@ -1066,7 +1039,7 @@ async function renderRecord(view, { params, query }) {
 async function pendingCard() {
   const { games } = await get("/games/pending");
   if (!games.length) return "";
-  return html`<div class="card card-hero gm-home-pending">
+  return html`<div class="card card-hero gm-home-pending" data-todo="${games.length}">
     <div class="card-head"><p class="card-title"><span class="icon">✍️</span>成績を入力しよう！</p><span class="badge">${games.length}</span></div>
     <p class="small muted" style="margin:-4px 0 12px">LINEで送らなくてOK。ここで入力すればチーム成績に反映されます</p>
     <div class="stack">
@@ -1082,15 +1055,16 @@ async function latestCard() {
   const d = await get("/games/latest");
   if (!d.game) return "";
   const g = d.game;
-  return html`<a class="card card-link gm-home-latest gm-hero-${g.result || "none"}" href="#/games/${g.id}">
+  const live = g.status === "draft";
+  return html`<a class="card card-link gm-home-latest gm-hero-${live ? "none" : g.result || "none"}" href="#/games/${g.id}">
     <div class="card-head">
-      <p class="card-title"><span class="icon">🏟</span>最新の試合結果</p>
+      <p class="card-title"><span class="icon">🏟</span>${live ? "試合速報" : "最新の試合結果"}</p>
       <span class="small muted">${fmtDate(g.date)}</span>
     </div>
     <div class="gm-latest-main">
-      ${resultMark(g.result, { big: true })}
+      ${resultMark(g.result, { big: true, live })}
       <div class="grow">
-        <p class="gm-latest-score num">${g.our_score} <span>-</span> ${g.their_score}</p>
+        <p class="gm-latest-score num">${g.our_score ?? "-"} <span>-</span> ${g.their_score ?? "-"}</p>
         <p class="small muted">vs ${g.opponent} ・ ${KIND[g.kind]?.[0] || ""}${g.status === "draft" ? " ・ 入力中" : ""}</p>
       </div>
       <span class="chev">›</span>
@@ -1110,7 +1084,7 @@ export default {
     "/games/:id/record": renderRecord,
   },
   homeCards: [
-    { order: 20, render: pendingCard },
+    { order: 11, render: pendingCard },
     { order: 30, render: latestCard },
   ],
   menu: [],

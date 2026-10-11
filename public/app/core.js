@@ -248,7 +248,7 @@ export async function render() {
     mount(page, html`<div class="empty"><p>ページが見つかりません</p><a class="btn" href="#/">ホームへ</a></div>`);
     return;
   }
-  page.innerHTML = `<div class="loading"><span></span><span></span><span></span></div>`;
+  page.innerHTML = `<div class="loading" role="status" aria-label="読み込み中"><span></span><span></span><span></span></div>`;
   try {
     const c = await found.r.render(page, { params: found.params, query });
     if (seq !== renderSeq) {

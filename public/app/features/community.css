@@ -4,7 +4,6 @@
 .cm-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; font-size: 14px; padding: 11px 4px; }
 .cm-tabs .badge { min-width: 18px; height: 18px; font-size: 10px; }
 .cm-section { display: flex; flex-direction: column; gap: 14px; }
-.cm-fab-space { height: 64px; }
 .cm-pad { padding: 16px 0; }
 .cm-sub-title { font-size: 12px; font-weight: 700; color: var(--muted); margin: 14px 0 8px; }
 .pill-btn {
@@ -14,7 +13,7 @@
 .pill-btn.active { background: rgba(255, 200, 61, 0.16); border-color: var(--amber); color: var(--amber); }
 .cm-picker { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
 .cm-seg-sm { margin-bottom: 10px; }
-.cm-seg-sm button { padding: 7px 4px; }
+.cm-seg-sm button { padding: 10px 4px; }
 @keyframes cm-pop { 0% { transform: scale(0.6); } 60% { transform: scale(1.15); } 100% { transform: scale(1); } }
 .pop { animation: cm-pop 0.4s cubic-bezier(0.3, 1.6, 0.5, 1) both; }
 
@@ -271,9 +270,4 @@
   font-family: var(--num); font-size: 17px; cursor: pointer; letter-spacing: 0.02em;
 }
 .cm-preset.on { background: rgba(255, 200, 61, 0.16); border-color: var(--amber); color: var(--amber); }
-.cm-submit-bar {
-  position: sticky; bottom: calc(var(--tabbar-h) + 8px + var(--safe-b)); z-index: 5;
-}
-.cm-submit { min-height: 56px; font-size: 17px; font-weight: 900; }
 .cm-home-practice .cm-streak-n .num { font-size: 44px; }
-.cm-submit-bar { margin-top: 4px; }

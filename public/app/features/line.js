@@ -1,6 +1,6 @@
 // LINE通知（公式アカウント連携）の設定画面
-import { esc, get, html, isAdmin, mount, on, patch, post, raw, setHeader } from "../core.js";
-import { ago, busy, sheet, toast, toastError } from "../ui.js";
+import { get, html, isAdmin, mount, on, patch, post, raw, setHeader } from "../core.js";
+import { ago, bgImage, busy, copyText, sheet, toast, toastError } from "../ui.js";
 
 const WEBHOOK_PATH = "/api/line/webhook";
 
@@ -95,9 +95,9 @@ function checklist(s) {
 
 function groupItem(g, selected) {
   const name = g.name || (g.type === "room" ? "複数人トーク" : "名前未取得のグループ");
-  const avatarStyle = g.picture ? raw(` style="background-image:url('${esc(g.picture)}')"`) : "";
+  const avatarStyle = bgImage(g.picture);
   return html`<button class="list-item line-group ${selected ? "is-selected" : ""}" data-act="target" data-id="${g.id}" ${g.joined ? "" : "disabled"} aria-pressed="${selected}">
-    <span class="avatar avatar-md line-group-avatar"${avatarStyle}>${g.picture ? "" : "👥"}</span>
+    <span class="avatar avatar-md line-group-avatar"${avatarStyle}>${String(avatarStyle) ? "" : "👥"}</span>
     <span class="list-main">
       <span class="list-title ellipsis" style="display:block">${name}</span>
       <span class="list-sub" style="display:block">${g.joined ? `最終確認 ${ago(g.lastSeenAt)}` : "公式アカウントが退出しました"}</span>
@@ -258,18 +258,7 @@ async function renderLine(view) {
         draw();
       }),
     ),
-    on(view, "click", "[data-act=copy]", async (e, btn) => {
-      try {
-        await navigator.clipboard.writeText(btn.dataset.text);
-        toast("コピーしました", { type: "success", ms: 1500 });
-      } catch {
-        const range = document.createRange();
-        range.selectNodeContents(btn.parentElement.querySelector("code"));
-        getSelection().removeAllRanges();
-        getSelection().addRange(range);
-        toast("長押ししてコピーしてください");
-      }
-    }),
+    on(view, "click", "[data-act=copy]", (e, btn) => copyText(btn.dataset.text)),
     on(view, "click", "[data-act=test]", (e, btn) =>
       busy(btn, async () => {
         try {

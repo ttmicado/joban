@@ -12,7 +12,7 @@
   --line-2: rgba(255, 255, 255, 0.14);
   --text: #eef3ff;
   --muted: #93a3c8;
-  --dim: #5f6f96;
+  --dim: #7484ab; /* 暗い背景でもコントラスト 4.3〜5:1 を確保 */
   --green: #27d17f; /* 芝・出席・勝ち */
   --green-dark: #128a52;
   --amber: #ffc83d; /* スコアボード・強調 */
@@ -84,7 +84,7 @@ h1, h2, h3, h4, p { margin: 0; }
   min-height: 56px;
 }
 .topbar-back {
-  width: 36px; height: 36px; margin-left: -8px; border: 0; border-radius: 50%;
+  width: 44px; height: 44px; margin-left: -12px; flex: none; color: var(--text); border: 0; border-radius: 50%;
   background: transparent; display: grid; place-items: center; cursor: pointer;
 }
 .topbar-back svg { width: 22px; height: 22px; fill: none; stroke: var(--text); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
@@ -93,12 +93,12 @@ h1, h2, h3, h4, p { margin: 0; }
 .topbar-team { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: 0.08em; }
 .topbar-title { font-size: 18px; font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-actions { display: flex; gap: 6px; align-items: center; }
-.topbar-me { display: block; border-radius: 50%; }
+.topbar-me { display: grid; place-items: center; min-width: 44px; min-height: 44px; margin-right: -5px; border-radius: 50%; }
 .topbar-me .avatar { --s: 34px; }
 
 /* ---------------------------------------------------------------- 本文 */
 .view { max-width: 560px; margin: 0 auto; padding-bottom: calc(var(--tabbar-h) + 24px + var(--safe-b)); }
-.page { padding: 16px; display: flex; flex-direction: column; gap: 14px; animation: page-in 0.28s ease both; }
+.page { padding: 16px; display: flex; flex-direction: column; gap: 14px; animation: page-in 0.28s ease backwards; } /* both だと終了後も transform が残り、中の position: fixed（FAB）がページ基準になってしまう */
 @keyframes page-in { from { opacity: 0; transform: translateY(8px); } }
 .section-title {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -180,10 +180,12 @@ button.list-item { width: 100%; text-align: left; border: 0; background: transpa
 .btn-danger { background: var(--red); color: #fff; border-color: transparent; }
 .btn-ghost { background: transparent; }
 .btn-line { background: #06c755; color: #fff; border-color: transparent; }
-.btn-sm { min-height: 34px; padding: 6px 12px; font-size: 13px; border-radius: 10px; }
+.btn-sm { min-height: 36px; padding: 6px 12px; font-size: 13px; border-radius: 10px; position: relative; }
+/* 小さいボタンも指で押せるよう、見た目は変えずに当たり判定を 44px 以上に広げる */
+.btn-sm::before { content: ""; position: absolute; inset: -5px -2px; }
 .btn-block { width: 100%; }
 .icon-btn {
-  width: 38px; height: 38px; border-radius: 50%; border: 0; background: var(--card-hi); color: var(--text);
+  width: 44px; height: 44px; flex: none; border-radius: 50%; border: 0; background: var(--card-hi); color: var(--text);
   display: inline-grid; place-items: center; cursor: pointer; font-size: 16px;
 }
 .fab {
@@ -193,6 +195,22 @@ button.list-item { width: 100%; text-align: left; border: 0; background: transpa
   box-shadow: 0 10px 24px rgba(39, 209, 127, 0.45); display: grid; place-items: center;
 }
 .fab:active { transform: scale(0.94); }
+.fab-icon { line-height: 1; }
+.fab-ext { width: auto; height: 54px; padding: 0 20px 0 16px; border-radius: 99px; gap: 6px; display: inline-flex; align-items: center; font-size: 24px; text-decoration: none; }
+.fab-label { font-size: 15px; font-weight: 900; letter-spacing: 0.02em; }
+/* FAB がある画面は最後の要素が隠れないよう下に余白 */
+.page:has(.fab) { padding-bottom: 84px; }
+
+/* 画面下に固定する保存ボタン（成績入力・スコア・スタメン・練習記録など） */
+.savebar {
+  position: sticky; bottom: calc(var(--tabbar-h) + 8px + var(--safe-b)); z-index: 5; margin-top: 6px;
+  padding: 10px; border-radius: 16px; background: rgba(10, 17, 36, 0.85); backdrop-filter: blur(10px); border: 1px solid var(--line);
+}
+.savebar .btn { min-height: 52px; font-size: 16px; font-weight: 900; }
+
+/* キーボード操作のフォーカス表示 */
+:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.input:focus-visible, .select:focus-visible, .textarea:focus-visible { outline: none; }
 
 /* ---------------------------------------------------------------- チップ・バッジ */
 .chip {
@@ -204,6 +222,16 @@ button.list-item { width: 100%; text-align: left; border: 0; background: transpa
 .chip-red { background: rgba(255, 90, 95, 0.16); color: var(--red); }
 .chip-blue { background: rgba(77, 163, 255, 0.16); color: var(--blue); }
 .chip-purple { background: rgba(167, 139, 250, 0.16); color: var(--purple); }
+
+/* 横スクロールのタブチップ（シーズン切り替えなど） */
+.chip-tabs { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: -2px -16px; padding: 2px 16px; }
+.chip-tabs::-webkit-scrollbar { display: none; }
+.chip-tab {
+  flex: none; min-height: 40px; padding: 6px 16px; border-radius: 99px; display: inline-flex; align-items: center;
+  border: 1px solid var(--line-2); background: var(--bg-2); color: var(--muted); font-family: var(--num); font-size: 18px; letter-spacing: 0.04em;
+}
+.chip-tab .ja { font-family: var(--font); font-size: 14px; font-weight: 700; }
+.chip-tab.active { background: var(--amber); border-color: var(--amber); color: #2b1d00; box-shadow: 0 4px 14px rgba(255, 200, 61, 0.3); }
 .badge {
   min-width: 20px; height: 20px; padding: 0 6px; border-radius: 99px; background: var(--red); color: #fff;
   font-size: 11px; font-weight: 900; display: inline-grid; place-items: center;
@@ -251,7 +279,7 @@ button.list-item { width: 100%; text-align: left; border: 0; background: transpa
 .stepper-label { font-weight: 700; font-size: 14px; }
 .stepper-ctrl { display: flex; align-items: center; gap: 4px; }
 .stepper-btn {
-  width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--card-hi);
+  width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--card-hi);
   font-size: 22px; font-weight: 700; cursor: pointer; display: grid; place-items: center; touch-action: manipulation;
 }
 .stepper-btn:active { background: var(--green); color: #04220f; }
@@ -387,6 +415,11 @@ button.list-item { width: 100%; text-align: left; border: 0; background: transpa
 .greet-text { flex: 1; }
 .greet-hello { font-size: 12px; color: var(--muted); font-weight: 700; }
 .greet-name { font-size: 20px; font-weight: 900; }
+.greet-todo { font-size: 13px; font-weight: 700; margin-top: 4px; min-height: 18px; color: var(--muted); }
+.greet-todo.has { color: var(--amber); }
+.greet-todo.done { color: var(--green); }
+/* メニューのアイコン列（絵文字の幅をそろえる） */
+.menu-ic { width: 26px; flex: none; text-align: center; font-size: 18px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

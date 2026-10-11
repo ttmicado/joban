@@ -1,6 +1,6 @@
 // 成績: ランキング・成績表・チーム成績・選手ページ
 import { get, html, isAdmin, mount, navigate, on, post, raw, setHeader, state } from "../core.js";
-import { avatar, busy, celebrate, empty, fmtDate, memberLabel, segmented, toast } from "../ui.js";
+import { avatar, busy, celebrate, chipTabs, countUp, empty, fmtDate, memberLabel, segmented, toast } from "../ui.js";
 import { fmtIP, fmtNum, fmtRate, RESULT_LABEL } from "../lib/stats.js";
 
 // ---------------------------------------------------------------- 表示ヘルパー
@@ -33,26 +33,6 @@ const POS_NAME = { 投: "投手", 捕: "捕手", 一: "一塁手", 二: "二塁�
 
 const seasonText = (s) => (s === "career" ? "通算" : `${s}年`);
 
-// 数字のカウントアップ: <span data-count="0.333" data-fmt="rate">
-function countUp(root) {
-  const els = [...root.querySelectorAll("[data-count]")];
-  if (!els.length) return;
-  const final = () => els.forEach((el) => (el.textContent = fmt(el.dataset.fmt, Number(el.dataset.count))));
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return final();
-  const t0 = performance.now();
-  const dur = 900;
-  const step = (now) => {
-    const t = Math.min(1, (now - t0) / dur);
-    const e = 1 - Math.pow(1 - t, 3);
-    for (const el of els) {
-      if (!el.isConnected) continue;
-      el.textContent = fmt(el.dataset.fmt, Number(el.dataset.count) * e);
-    }
-    if (t < 1) requestAnimationFrame(step);
-    else final();
-  };
-  requestAnimationFrame(step);
-}
 const counted = (type, v) =>
   v === null || v === undefined ? html`<span>-</span>` : html`<span data-count="${v}" data-fmt="${type}">${fmt(type, 0)}</span>`;
 
@@ -66,10 +46,8 @@ function celebrateOnce(key) {
 }
 
 function seasonChips(seasons, current, hrefFor) {
-  const list = [...seasons.map((s) => [String(s), `${s}`]), ["career", "通算"]];
-  return html`<div class="st-seasons" role="tablist" aria-label="シーズン">
-    ${list.map(([v, label]) => html`<a class="st-season ${String(current) === v ? "active" : ""}" href="#${hrefFor(v)}" role="tab">${label}</a>`)}
-  </div>`;
+  const list = [...seasons.map((s) => [String(s), `${s}`]), ["career", html`<span class="ja">通算</span>`]];
+  return chipTabs(list.map(([v, label]) => [`#${hrefFor(v)}`, label, String(current) === v]), { label: "シーズン" });
 }
 
 const isMe = (m) => m && state.member && m.id === state.member.id;
@@ -166,7 +144,10 @@ async function renderStats(view, { query }) {
         ${seasonText(data.season)}・確定 <b class="num">${q.games}</b> 試合 ／ 規定${tab === "batting" ? html`打席 <b class="num">${q.pa}</b>` : html`投球回 <b class="num">${q.ip}</b>`}
       </div>
       ${any
-        ? cats.map((c) => catCard(c, tab, season))
+        ? html`<nav class="chip-tabs st-jump" aria-label="部門へ移動">${cats.map(
+            (c) => html`<button type="button" class="chip-tab" data-jump="${c.key}"><span class="ja">${CAT_ICON[c.key] || ""} ${c.label}</span></button>`,
+          )}</nav>
+          ${cats.map((c) => catCard(c, tab, season))}`
         : html`<div class="card">${empty(tab === "batting" ? "まだ記録がありません。最初のヒットを打つのは誰だ！？" : "まだ登板記録がありません。最初のマウンドに立つのは誰だ！？", {
             icon: tab === "batting" ? "🌟" : "🧢",
             action: devSeedButton(),
@@ -181,6 +162,10 @@ async function renderStats(view, { query }) {
   const offs = [
     on(view, "click", "[data-segmented=stats-tab] button", (_, b) => navigate(href(b.dataset.value, season), { replace: true })),
     bindDevSeed(view),
+    on(view, "click", "[data-jump]", (_, b) => {
+      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      view.querySelector(`[data-cat="${b.dataset.jump}"]`)?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+    }),
   ];
   return () => offs.forEach((f) => f());
 }
@@ -214,7 +199,7 @@ function teamView(t, season) {
     </div>
     <section class="card">
       <div class="card-head"><p class="card-title"><span class="icon">⚔️</span>得点と失点</p>
-        <span class="chip ${t.runDiff >= 0 ? "chip-green" : "chip-red"}">得失点差 ${t.runDiff > 0 ? "+" : ""}${t.runDiff}</span></div>
+        <span class="chip ${t.runDiff > 0 ? "chip-green" : t.runDiff < 0 ? "chip-red" : ""}">得失点差 ${t.runDiff > 0 ? "+" : ""}${t.runDiff}</span></div>
       <div class="st-bars">
         <div class="st-bar"><span class="st-bar-label">得点</span><span class="st-bar-track"><i class="st-bar-fill st-bar-us" style="width:${Math.round((t.runs / maxRuns) * 100)}%"></i></span><span class="num st-bar-num">${counted("count", t.runs)}</span></div>
         <div class="st-bar"><span class="st-bar-label">失点</span><span class="st-bar-track"><i class="st-bar-fill st-bar-them" style="width:${Math.round((t.allowed / maxRuns) * 100)}%"></i></span><span class="num st-bar-num">${counted("count", t.allowed)}</span></div>
@@ -497,10 +482,10 @@ function gameLogList(log) {
 async function renderPlayer(view, { params }) {
   const id = Number(params.id);
   const me = state.member && state.member.id === id;
-  setHeader({ title: me ? "マイページ" : "選手ページ", back: true, actions: me ? html`<a class="btn btn-sm" href="#/me/edit">✏️ 編集</a>` : "" });
+  setHeader({ title: me ? "マイページ" : "選手ページ", back: "/stats", actions: me ? html`<a class="btn btn-sm" href="#/me/edit">✏️ 編集</a>` : "" });
   const p = await get(`/stats/players/${encodeURIComponent(params.id)}`);
   const m = p.member;
-  if (!me) setHeader({ title: m.name, back: true });
+  if (!me) setHeader({ title: m.name, back: "/stats" });
   const cur = p.current;
   const hasAny = p.gameLog.length > 0;
   const spark = p.trend.points.length >= 2 ? sparkline(p.trend.points, p.gameLog) : null;

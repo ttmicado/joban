@@ -20,7 +20,7 @@ import {
   startRouter,
   state,
 } from "./core.js";
-import { avatar, busy, celebrate, empty, memberLabel, readForm, sheet, toast, toastError } from "./ui.js";
+import { avatar, busy, celebrate, empty, fab, memberLabel, readForm, sheet, toast } from "./ui.js";
 
 import schedule from "./features/schedule.js";
 import games from "./features/games.js";
@@ -44,11 +44,25 @@ async function renderHome(view) {
         <div class="greet-text">
           <p class="greet-hello">${hello}</p>
           <p class="greet-name">${memberLabel(m)} さん</p>
+          <p class="greet-todo" data-greet-todo aria-live="polite"></p>
         </div>
       </div>
       ${cards.map((_, i) => html`<div data-home-card="${i}"><div class="skeleton" style="height:96px"></div></div>`)}
       ${cards.length ? "" : empty("まだ機能がありません")}`,
   );
+  // やること（data-todo を持つカードの件数の合計）をあいさつの下に出す。カード操作で減ったら更新
+  const todoEl = view.querySelector("[data-greet-todo]");
+  let loaded = false;
+  const updateTodo = () => {
+    const n = [...view.querySelectorAll("[data-todo]")].reduce((a, el) => a + (Number(el.dataset.todo) || 0), 0);
+    const cls = `greet-todo ${n ? "has" : loaded ? "done" : ""}`;
+    const text = n ? `やることが ${n} 件あります 👇` : loaded ? "やることは全部完了！ナイス 👍" : "";
+    // 自分の書き換えで MutationObserver が再度呼ばれてもループしないよう、変化があるときだけ書く
+    if (todoEl.className !== cls) todoEl.className = cls;
+    if (todoEl.textContent !== text) todoEl.textContent = text;
+  };
+  const mo = new MutationObserver(updateTodo);
+  mo.observe(view, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-todo"] });
   // カードは並列に読み込み、できたものから表示
   await Promise.all(
     cards.map(async (card, i) => {
@@ -64,6 +78,9 @@ async function renderHome(view) {
       }
     }),
   );
+  loaded = true;
+  updateTodo();
+  return () => mo.disconnect();
 }
 
 // ---------------------------------------------------------------- 参加
@@ -120,9 +137,18 @@ function renderJoin(view) {
 }
 
 // ---------------------------------------------------------------- その他
+const menuRow = (href, icon, label, extra = "") =>
+  html`<a class="list-item" href="${href}"><span class="menu-ic" aria-hidden="true">${icon}</span><span class="list-main list-title">${label}</span>${extra}<span class="chev" aria-hidden="true">›</span></a>`;
+
 async function renderMore(view) {
-  setHeader({ title: "その他" });
+  setHeader({ title: "その他", back: true });
   const items = getMenuItems();
+  // order の十の位でまとめる（10番台=日程、30番台=成績・チーム、90番台=設定系）
+  const groups = [
+    ["日程・試合", items.filter((it) => (it.order ?? 50) < 30)],
+    ["成績・チーム", items.filter((it) => (it.order ?? 50) >= 30 && (it.order ?? 50) < 90)],
+  ];
+  const settings = items.filter((it) => (it.order ?? 50) >= 90);
   mount(
     view,
     html`<a class="card card-link row gap" href="#/players/${state.member.id}">
@@ -131,11 +157,15 @@ async function renderMore(view) {
         <span class="chev">›</span>
       </a>
       <div class="list">
-        <a class="list-item" href="#/me/edit"><span>✏️</span><span class="list-main list-title">プロフィール編集</span><span class="chev">›</span></a>
-        <a class="list-item" href="#/members"><span>👥</span><span class="list-main list-title">メンバー一覧</span><span class="chev">›</span></a>
-        ${items.map((it) => html`<a class="list-item" href="#${it.path}"><span>${it.icon || "・"}</span><span class="list-main list-title">${it.label}</span><span class="chev">›</span></a>`)}
-        <a class="list-item" href="/garapon/"><span>🎰</span><span class="list-main list-title">ガラポン抽選会</span><span class="chev">›</span></a>
-        ${isAdmin() ? html`<a class="list-item" href="#/settings"><span>⚙️</span><span class="list-main list-title">チーム設定</span><span class="chev">›</span></a>` : ""}
+        ${menuRow("#/me/edit", "✏️", "プロフィール編集")}
+        ${menuRow("#/members", "👥", "メンバー一覧")}
+      </div>
+      ${groups.map(([title, list]) => (list.length ? html`<p class="section-title">${title}</p><div class="list">${list.map((it) => menuRow(`#${it.path}`, it.icon || "・", it.label))}</div>` : ""))}
+      <p class="section-title">設定・その他</p>
+      <div class="list">
+        ${settings.map((it) => menuRow(`#${it.path}`, it.icon || "・", it.label))}
+        ${isAdmin() ? menuRow("#/settings", "⚙️", "チーム設定", html`<span class="chip chip-amber">管理者</span>`) : ""}
+        ${menuRow("/garapon/", "🎰", "ガラポン抽選会")}
       </div>`,
   );
 }
@@ -158,11 +188,7 @@ function renderEditMe(view) {
 // ---------------------------------------------------------------- メンバー
 async function renderMembers(view) {
   const admin = isAdmin();
-  setHeader({
-    title: "メンバー",
-    back: "/more",
-    actions: admin ? html`<button class="btn btn-sm" data-act="add-guest">＋助っ人</button>` : "",
-  });
+  setHeader({ title: "メンバー", back: "/more" });
   let { members } = await get(`/members${admin ? "?all=1" : ""}`);
   const draw = (list) =>
     mount(
@@ -179,10 +205,11 @@ async function renderMembers(view) {
               ${m.role === "admin" ? html`<span class="chip chip-amber">管理者</span>` : ""}
               ${m.isGuest ? html`<span class="chip chip-purple">助っ人</span>` : ""}
               ${m.active ? "" : html`<span class="chip">退団</span>`}
-              ${admin ? html`<button class="icon-btn" data-act="edit" data-id="${m.id}" aria-label="編集">⋯</button>` : ""}
+              ${admin ? html`<button class="icon-btn" data-act="edit" data-id="${m.id}" aria-label="${m.name}を編集">⋯</button>` : ""}
             </div>`,
           )}
-        </div>`,
+        </div>
+        ${admin ? fab({ label: "助っ人を追加", short: "助っ人", act: "add-guest" }) : ""}`,
     );
   draw(members);
 
@@ -222,7 +249,7 @@ async function renderMembers(view) {
 
   const offs = [
     on(view, "click", "[data-act=edit]", (_, b) => openEdit(members.find((m) => m.id === Number(b.dataset.id)))),
-    on($("#page-actions"), "click", "[data-act=add-guest]", () => openEdit(null)),
+    on(view, "click", "[data-act=add-guest]", () => openEdit(null)),
   ];
   return () => offs.forEach((f) => f());
 }

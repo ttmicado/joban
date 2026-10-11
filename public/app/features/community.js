@@ -6,8 +6,12 @@ import {
   busy,
   celebrate,
   confirmDialog,
+  copyText,
+  countUp,
+  fab,
   empty,
   fmtDate,
+  loading,
   memberLabel,
   readForm,
   relDay,
@@ -47,27 +51,6 @@ function linkify(text) {
   );
 }
 
-// [data-count] の数字をカウントアップ
-function countUp(root) {
-  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  for (const el of root.querySelectorAll("[data-count]")) {
-    const to = Number(el.dataset.count);
-    const dec = String(el.dataset.count).includes(".") ? 1 : 0;
-    if (reduce || !to) {
-      el.textContent = to.toFixed(dec);
-      continue;
-    }
-    const t0 = performance.now();
-    const dur = Math.min(1200, 500 + to * 8);
-    const step = (t) => {
-      const k = Math.min(1, (t - t0) / dur);
-      const e = 1 - Math.pow(1 - k, 3);
-      el.textContent = (to * e).toFixed(dec);
-      if (k < 1 && el.isConnected) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-  }
-}
 const cnt = (n, cls = "") => html`<span class="num ${cls}" data-count="${n}">0</span>`;
 
 const storage = {
@@ -215,8 +198,7 @@ async function noticesSection(box) {
           ? html`<p class="section-title"><span>お知らせ ${unread ? html`<span class="badge">${unread}</span>` : ""}</span><span class="small muted">ピン留め → 新しい順</span></p>
               <div class="stack">${notices.map(noticeCard)}</div>`
           : empty("まだお知らせはありません。最初の連絡を投稿してみよう！", { icon: "📭" })}
-        <div class="cm-fab-space"></div>
-        <button class="fab" data-act="compose" aria-label="お知らせを投稿">✏️</button>`,
+        ${fab({ label: "お知らせを投稿", short: "投稿", icon: "✏️", act: "compose" })}`,
     );
     return notices;
   };
@@ -240,6 +222,7 @@ async function noticesSection(box) {
 }
 
 async function renderNotice(view, { params }) {
+  setHeader({ title: "お知らせ", back: "/team?tab=notices" });
   const load = () => get(`/notices/${encodeURIComponent(params.id)}`);
   let data = await load();
   const draw = () => {
@@ -311,12 +294,7 @@ async function renderNotice(view, { params }) {
         const names = data.notAcked.map((m) => `${m.name}さん`).join("、");
         const text = `【了解おねがいします🙏】${n.title || n.body.slice(0, 30)}\nまだの人: ${names}\n${appUrl(`/notices/${n.id}`)}`;
         if (await shareToLine([{ type: "text", text }])) return toast("送信しました", { type: "success" });
-        try {
-          await navigator.clipboard.writeText(text);
-          toast("催促メッセージをコピーしました。LINEに貼り付けてね", { type: "success" });
-        } catch {
-          sheet({ title: "催促メッセージ", body: html`<textarea class="textarea" rows="6" readonly>${text}</textarea>` });
-        }
+        await copyText(text, { message: "催促メッセージをコピーしました。LINEに貼り付けてね" });
       }),
     ),
     on($("#page-actions"), "click", "[data-act=menu]", () => {
@@ -680,7 +658,6 @@ function streakCard(s, { compact = false } = {}) {
         <p class="cm-streak-n">練習 ${cnt(s.streak, "amber")}<span>日連続</span> <span class="cm-fire">${fire}</span></p>
         ${s.bestStreak > s.streak ? html`<p class="small muted">自己ベスト ${s.bestStreak}日</p>` : s.streak > 1 ? html`<p class="small amber">自己ベスト更新中！</p>` : ""}
       </div>
-      ${compact ? "" : html`<a class="btn btn-primary" href="#/practice/new">＋ 記録</a>`}
     </div>
     <div class="tiles cm-tiles">
       <div class="tile"><p class="tile-label">今月の練習</p><p class="tile-value">${cnt(s.monthDays)}<small>日</small></p></div>
@@ -731,8 +708,7 @@ async function practiceSection(box) {
           ? html`<div class="stack" data-feed>${feed.map(practiceCard)}</div>
               ${more ? html`<button class="btn btn-ghost btn-block" data-act="more">もっと見る</button>` : ""}`
           : empty("まだ練習報告がありません。素振り1回からでも記録しよう！", { icon: "🏏" })}
-        <div class="cm-fab-space"></div>
-        <a class="fab" href="#/practice/new" aria-label="練習を記録">＋</a>`,
+        ${fab({ label: "練習を記録", short: "記録", href: "#/practice/new" })}`,
     );
     countUp(box);
   };
@@ -855,7 +831,7 @@ async function renderPracticeNew(view, { query }) {
       <section class="card">
         <div class="field"><label>ひとこと（任意）</label><textarea class="textarea" name="comment" maxlength="300" rows="3" placeholder="例: 雨だったので室内で。明日も頑張る！">${p?.comment || ""}</textarea></div>
       </section>
-      <div class="cm-submit-bar"><button class="btn btn-primary btn-block cm-submit" type="submit">${p ? "保存する" : "💪 記録する"}</button></div>
+      <div class="savebar"><button class="btn btn-primary btn-block" type="submit">${p ? "保存する" : "💪 記録する"}</button></div>
     </form>`,
   );
   const form = $("#cm-pform", view);
@@ -979,7 +955,7 @@ async function renderTeam(view, { query }) {
     const inner = document.createElement("div");
     inner.className = "cm-section";
     box.replaceChildren(inner);
-    mount(inner, html`<div class="loading"><span></span><span></span><span></span></div>`);
+    mount(inner, loading());
     try {
       const fn = { notices: noticesSection, wakeup: wakeSection, practice: practiceSection }[tab];
       const c = await fn(inner);
@@ -988,10 +964,11 @@ async function renderTeam(view, { query }) {
     } catch (err) {
       if (my !== seq) return;
       console.error(err);
-      mount(inner, empty(err.message || "読み込みに失敗しました", { icon: "⚠️" }));
+      mount(inner, empty(err.message || "読み込みに失敗しました", { icon: "⚠️", action: html`<button class="btn" data-act="retry">もう一度読み込む</button>` }));
     }
   };
 
+  const offRetry = on(view, "click", "[data-act=retry]", () => show());
   const off = on(view, "click", "[data-tab]", (_, b) => {
     if (b.dataset.tab === tab) return;
     tab = b.dataset.tab;
@@ -1004,6 +981,7 @@ async function renderTeam(view, { query }) {
   return () => {
     seq++;
     off();
+    offRetry();
     if (typeof cleanup === "function") cleanup();
   };
 }
@@ -1026,7 +1004,7 @@ const homeWake = {
     const me = b.me.wakeup;
     const e = b.event;
     if (!me) {
-      return html`<section class="card cm-home-wake" data-event="${e.id}">
+      return html`<section class="card cm-home-wake" data-event="${e.id}" data-todo="1">
         <div class="cm-sunrise" aria-hidden="true"></div>
         <p class="small strong amber">今日は${e.type === "game" ? "試合" : e.type === "practice" ? "練習" : "予定"}の日！</p>
         <p class="strong ellipsis">${e.title}${e.meetTime ? html` ・ 集合 ${e.meetTime}` : ""}</p>
@@ -1064,7 +1042,7 @@ const homeNotice = {
     const { count, notice: n } = await get("/notices/pending");
     if (!n) return "";
     const cat = CATS[n.category] || CATS.info;
-    return html`<section class="card cm-home-notice cm-cat-${n.category}">
+    return html`<section class="card cm-home-notice cm-cat-${n.category}" data-todo="${count}">
       <div class="row gap">
         <span class="chip ${cat.chip}">${cat.icon} ${cat.label}</span>
         <span class="small muted grow">${n.author?.name || ""} ・ ${ago(n.createdAt)}</span>
@@ -1101,7 +1079,7 @@ const homeNotice = {
 };
 
 const homePractice = {
-  order: 50,
+  order: 42,
   render: async () => {
     const s = await get("/practices/summary");
     const fire = s.streak >= 3 ? "🔥🔥" : s.streak ? "🔥" : "🌱";

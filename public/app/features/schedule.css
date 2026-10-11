@@ -336,3 +336,11 @@ button.sch-person:not(:disabled):active { background: var(--card-hi); }
 .sch-pending .card-head { margin-bottom: 10px; }
 .sch-pending-n { font-size: 26px; color: var(--amber); margin: 0 2px; }
 .sch-pending .list-item { min-height: 52px; padding: 10px 12px; }
+
+/* 試合当日（ホームの次の予定カード） */
+.sch-gameday {
+  display: flex; align-items: baseline; gap: 10px; margin: -16px -16px 0; padding: 10px 16px;
+  background: linear-gradient(90deg, var(--amber), #ff9f43); color: #2b1d00; border-radius: var(--radius) var(--radius) 0 0;
+}
+.sch-gameday span:first-child { font-family: var(--num); font-size: 24px; letter-spacing: 0.08em; line-height: 1; }
+.sch-gameday-sub { font-size: 12px; font-weight: 900; }

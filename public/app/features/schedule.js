@@ -1,10 +1,14 @@
 // 日程: 予定一覧・カレンダー・詳細と出欠・予定の作成編集・球場・日程調整・カレンダー連携
-import { $, appUrl, del, get, html, isAdmin, mount, navigate, on, patch, post, put, raw, setHeader, shareToLine, state } from "../core.js";
+import { appUrl, del, get, html, isAdmin, mount, navigate, on, patch, post, put, raw, setHeader } from "../core.js";
 import {
   avatar,
   busy,
   celebrate,
+  chipTabs,
   confirmDialog,
+  copyText,
+  countUp,
+  fab,
   daysFrom,
   empty,
   fmtDate,
@@ -12,6 +16,7 @@ import {
   multiline,
   readForm,
   segmented,
+  share,
   sheet,
   toast,
   todayStr,
@@ -62,44 +67,6 @@ function countdown(date, today) {
 function countdownHtml(cd) {
   if (!cd.unit) return html`<span class="sch-cd-word">${cd.big}</span>`;
   return html`${cd.pre ? html`<span class="sch-cd-unit">${cd.pre}</span>` : ""}<span class="num sch-cd-num" data-count="${cd.big}">${cd.big}</span><span class="sch-cd-unit">${cd.unit}</span>`;
-}
-
-// 数字のカウントアップ
-function countUp(root) {
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  for (const el of root.querySelectorAll("[data-count]")) {
-    const to = Number(el.dataset.count);
-    if (!Number.isFinite(to) || to <= 0) continue;
-    const start = performance.now();
-    const dur = Math.min(900, 300 + to * 40);
-    const step = (now) => {
-      const p = Math.min(1, (now - start) / dur);
-      el.textContent = String(Math.round(to * (1 - Math.pow(1 - p, 3))));
-      if (p < 1) requestAnimationFrame(step);
-    };
-    el.textContent = "0";
-    requestAnimationFrame(step);
-  }
-}
-
-function headerAction(selector, fn) {
-  return on($("#page-actions"), "click", selector, fn);
-}
-
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.append(ta);
-    ta.select();
-    document.execCommand("copy");
-    ta.remove();
-  }
-  toast("コピーしました", { type: "success" });
 }
 
 // Googleカレンダーの予定作成URL
@@ -180,16 +147,7 @@ function flexFor(e) {
   };
 }
 
-async function shareEvent(e) {
-  try {
-    const ok = await shareToLine([flexFor(e)]);
-    if (ok) toast("LINEに送りました", { type: "success" });
-    else if (state.mock) toast("この環境ではLINE共有は使えません（LINEアプリで開くと使えます）");
-    else toast("LINEで開くと共有できます");
-  } catch (err) {
-    toast(err.message || "共有できませんでした", { type: "error" });
-  }
-}
+const shareEvent = (e) => share([flexFor(e)]);
 
 const mapLink = (e, venue) => e.venue_url || venue?.url || (e.venue ? mapUrl(venue?.address || e.venue) : "");
 
@@ -348,10 +306,7 @@ const monthLabel = (key) => `${Number(key.slice(0, 4))}年${Number(key.slice(5))
 async function renderList(view, { query }) {
   const mode = ["upcoming", "past", "cal"].includes(query.view) ? query.view : "upcoming";
   const admin = isAdmin();
-  setHeader({
-    title: "日程",
-    actions: admin ? html`<button class="btn btn-sm btn-primary" data-act="new-event">＋予定</button>` : "",
-  });
+  setHeader({ title: "日程" });
   const openNew = () => openEventForm(null, { onSaved: (ev) => navigate(`/schedule/${ev.id}`) });
 
   const pendingP = get("/events/pending").catch(() => null);
@@ -387,7 +342,8 @@ async function renderList(view, { query }) {
         <a class="sch-sc" href="#/schedule/venues">🏟 球場</a>
         <a class="sch-sc" href="#/calendar">🔗 カレンダー連携</a>
       </nav>
-      ${body}`,
+      ${body}
+      ${admin ? fab({ label: "予定を追加", short: "予定", act: "new-event" }) : ""}`,
   );
 
   const offs = [
@@ -403,7 +359,6 @@ async function renderList(view, { query }) {
       box.querySelector("[data-day-empty]").hidden = !!any;
       box.querySelector("[data-day-title]").textContent = fmtDate(b.dataset.day);
     }),
-    headerAction("[data-act=new-event]", openNew),
   ];
   if (query.new === "1" && admin) openNew();
   return () => offs.forEach((f) => f());
@@ -779,7 +734,7 @@ function venueForm(x, { onSaved }) {
 
 async function renderVenues(view) {
   const admin = isAdmin();
-  setHeader({ title: "球場一覧", back: "/schedule", actions: admin ? html`<button class="btn btn-sm btn-primary" data-act="new-venue">＋球場</button>` : "" });
+  setHeader({ title: "球場一覧", back: "/schedule" });
   const draw = async () => {
     const { venues } = await get("/venues");
     venuesCache = venues;
@@ -808,13 +763,13 @@ async function renderVenues(view) {
             action: admin ? html`<button class="btn btn-primary" data-act="new-venue">＋ 球場を登録</button>` : "",
           }),
     );
+    if (admin) view.insertAdjacentHTML("beforeend", String(fab({ label: "球場を登録", short: "球場", act: "new-venue" })));
     return venues;
   };
   let venues = await draw();
   const refresh = async () => (venues = await draw());
   const offs = [
     on(view, "click", "[data-act=new-venue]", () => venueForm(null, { onSaved: refresh })),
-    headerAction("[data-act=new-venue]", () => venueForm(null, { onSaved: refresh })),
     on(view, "click", "[data-edit]", (_, b) => venueForm(venues.find((x) => x.id === Number(b.dataset.edit)), { onSaved: refresh })),
   ];
   return () => offs.forEach((f) => f());
@@ -899,7 +854,7 @@ function pollForm({ onSaved }) {
 
 async function renderPolls(view) {
   const admin = isAdmin();
-  setHeader({ title: "日程調整", back: "/schedule", actions: admin ? html`<button class="btn btn-sm btn-primary" data-act="new-poll">＋つくる</button>` : "" });
+  setHeader({ title: "日程調整", back: "/schedule" });
   const { polls, member_count, today } = await get("/polls");
   const status = (p) =>
     p.status === "decided"
@@ -933,8 +888,9 @@ async function renderPolls(view) {
           action: admin ? html`<button class="btn btn-primary" data-act="new-poll">＋ 日程調整をつくる</button>` : "",
         }),
   );
+  if (admin) view.insertAdjacentHTML("beforeend", String(fab({ label: "日程調整をつくる", short: "日程調整", act: "new-poll" })));
   const create = () => pollForm({ onSaved: (p) => navigate(`/polls/${p.id}`) });
-  const offs = [on(view, "click", "[data-act=new-poll]", create), headerAction("[data-act=new-poll]", create)];
+  const offs = [on(view, "click", "[data-act=new-poll]", create)];
   return () => offs.forEach((f) => f());
 }
 
@@ -1196,9 +1152,12 @@ function nextCardHtml(d) {
   const yesList = d.attendance.filter((a) => a.status === "yes");
   const map = mapLink(e, d.venue);
   const deadlinePassed = e.rsvp_deadline && e.rsvp_deadline < d.today;
-  return html`<section class="card card-hero sch-next t-${e.type} ${cd.n === 0 ? "is-today" : ""}">
+  const when = cd.n === 0 ? "今日の" : cd.n === 1 ? "明日の" : "次の";
+  const gameDay = cd.n === 0 && e.type === "game";
+  return html`<section class="card card-hero sch-next t-${e.type} ${cd.n === 0 ? "is-today" : ""} ${gameDay ? "is-gameday" : ""}">
+    ${gameDay ? html`<p class="sch-gameday"><span>⚾ GAME DAY</span><span class="sch-gameday-sub">今日は試合！集合に遅れずに</span></p>` : ""}
     <div class="card-head">
-      <p class="card-title"><span class="icon">${typeOf(e.type).icon}</span>次の${typeOf(e.type).label}</p>
+      <p class="card-title"><span class="icon">${typeOf(e.type).icon}</span>${when}${typeOf(e.type).label}</p>
       ${e.rsvp_deadline && !d.my ? html`<span class="chip ${deadlinePassed ? "chip-red" : "chip-amber"}">締切 ${fmtDate(e.rsvp_deadline)}</span>` : typeChip(e.type)}
     </div>
     <a class="sch-next-main" href="#/schedule/${e.id}">
@@ -1219,6 +1178,9 @@ function nextCardHtml(d) {
         ? html`<a class="sch-next-venue" href="${map}" target="_blank" rel="noopener"><p class="sch-time-label">球場 🗺</p><p class="ellipsis">${e.venue}</p></a>`
         : ""}
     </div>
+    ${gameDay && d.game_id
+      ? html`<div class="row gap"><a class="btn btn-amber grow" href="#/games/${d.game_id}">📊 試合速報</a><a class="btn grow" href="#/games/${d.game_id}?tab=lineup">📋 スタメン</a></div>`
+      : ""}
     ${rsvpButtons(d.my?.status, { compact: true, attr: "data-home-rsvp" })}
     <div class="sch-next-foot">
       <span class="avatars">${yesList.slice(0, 7).map((a) => avatar(a.member, "sm"))}</span>
@@ -1234,7 +1196,7 @@ async function pendingCardHtml() {
     ...p.events.map((e) => ({ href: `#/schedule/${e.id}`, icon: typeOf(e.type).icon, title: e.title, sub: `${fmtDate(e.date)}${e.rsvp_deadline ? ` ・ 締切 ${fmtDate(e.rsvp_deadline)}` : ""}` })),
     ...p.polls.map((x) => ({ href: `#/polls/${x.id}`, icon: "🗳", title: x.title, sub: `日程調整${x.deadline ? ` ・ 締切 ${fmtDate(x.deadline)}` : ""}` })),
   ];
-  return html`<section class="card sch-pending">
+  return html`<section class="card sch-pending" data-todo="${p.count}">
     <div class="card-head">
       <p class="card-title"><span class="icon">📮</span>未回答が <b class="num sch-pending-n">${p.count}</b> 件</p>
       <span class="card-sub">タップして回答</span>
