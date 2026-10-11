@@ -233,7 +233,7 @@ export async function render() {
     }
   }
   // タブの選択状態（/players は成績タブ、/notices・/wakeup・/practice はチームタブ扱い）
-  const alias = { "/players": "/stats", "/notices": "/team", "/wakeup": "/team", "/practice": "/team", "/polls": "/schedule" };
+  const alias = { "/players": "/stats", "/notices": "/team", "/wakeup": "/team", "/practice": "/team", "/polls": "/schedule", "/calendar": "/schedule" };
   const first = "/" + (path.split("/")[1] || "");
   const top = alias[first] || first;
   for (const a of document.querySelectorAll("#tabbar a")) a.classList.toggle("active", a.dataset.tab === top);

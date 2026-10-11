@@ -24,7 +24,7 @@ export default {
       if (path === "/api/line/webhook" && request.method === "POST") return await lineWebhook(request, env);
       // カレンダー購読: /ics/<token>.ics
       const ics = /^\/ics\/([\w-]+)\.ics$/.exec(path);
-      if (ics) return await teamRaw(env, { method: "GET", path: `/ics/${ics[1]}` });
+      if (ics) return await teamRaw(env, { method: "GET", path: `/ics/${ics[1]}`, headers: { host: url.host, origin: url.origin } });
       if (path.startsWith("/api/")) return json({ error: "not_found", message: "Not found" }, 404);
       return env.ASSETS.fetch(request);
     } catch (err) {
