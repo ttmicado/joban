@@ -27,6 +27,7 @@ import games from "./features/games.js";
 import stats from "./features/stats.js";
 import community from "./features/community.js";
 import line from "./features/line.js";
+import importer from "./features/importer.js";
 
 const POSITIONS = ["投", "捕", "一", "二", "三", "遊", "左", "中", "右", "DH"];
 
@@ -292,7 +293,7 @@ function showChrome() {
 }
 
 async function boot() {
-  for (const f of [schedule, games, stats, community, line]) registerFeature(f);
+  for (const f of [schedule, games, stats, community, line, importer]) registerFeature(f);
   addRoute("/", renderHome);
   addRoute("/join", renderJoin);
   addRoute("/more", renderMore);
