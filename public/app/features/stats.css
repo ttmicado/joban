@@ -162,3 +162,6 @@
 /* 部門ジャンプ（ランキングが長いので先頭から目当ての部門へ） */
 .st-jump .chip-tab { min-height: 40px; cursor: pointer; }
 .st-cat { scroll-margin-top: 72px; }
+
+/* 選手ページの練習カード */
+.st-practice .tile-value small { font-family: var(--font); font-size: 12px; color: var(--muted); margin-left: 2px; }

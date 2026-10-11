@@ -483,7 +483,11 @@ async function renderPlayer(view, { params }) {
   const id = Number(params.id);
   const me = state.member && state.member.id === id;
   setHeader({ title: me ? "マイページ" : "選手ページ", back: "/stats", actions: me ? html`<a class="btn btn-sm" href="#/me/edit">✏️ 編集</a>` : "" });
-  const p = await get(`/stats/players/${encodeURIComponent(params.id)}`);
+  // 練習の記録（取れなくても選手ページは表示する）
+  const [p, practice] = await Promise.all([
+    get(`/stats/players/${encodeURIComponent(params.id)}`),
+    get(`/practices/summary?member=${id}`).catch(() => null),
+  ]);
   const m = p.member;
   if (!me) setHeader({ title: m.name, back: "/stats" });
   const cur = p.current;
@@ -547,12 +551,28 @@ async function renderPlayer(view, { params }) {
 
           <p class="section-title">試合ごとの成績 <span class="dim">${p.gameLog.length}試合</span></p>
           ${gameLogList(p.gameLog)}
-          ${yearTables(p.byYear, p.career)}`}`,
+          ${yearTables(p.byYear, p.career)}`}
+      ${practice ? practiceCard(practice, id, me ? "" : m.name) : ""}`,
   );
   countUp(view);
   if (me && top.length) setTimeout(() => celebrateOnce(`stats-player-top-${p.season}`), 400);
   const off = bindSpark(view, spark);
   return () => off();
+}
+
+// 選手ページの「練習の記録」カード（詳しくは /practice/member/:id）
+function practiceCard(s, id, name) {
+  return html`<a class="card card-link st-practice" href="#/practice/member/${id}">
+    <div class="card-head">
+      <p class="card-title"><span class="icon">🏏</span>${name ? `${name}さんの練習` : "練習の記録"}</p>
+      <span class="card-sub">すべて見る ›</span>
+    </div>
+    <div class="tiles">
+      <div class="tile"><p class="tile-label">連続</p><p class="tile-value"><span data-count="${s.streak}">${s.streak}</span><small>日</small></p></div>
+      <div class="tile"><p class="tile-label">今月の練習</p><p class="tile-value"><span data-count="${s.monthDays}">${s.monthDays}</span><small>日</small></p></div>
+      <div class="tile"><p class="tile-label">今月の素振り</p><p class="tile-value"><span data-count="${s.monthSwings}">${s.monthSwings}</span><small>回</small></p></div>
+    </div>
+  </a>`;
 }
 
 // ---------------------------------------------------------------- ホームカード

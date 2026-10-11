@@ -271,3 +271,9 @@
 }
 .cm-preset.on { background: rgba(255, 200, 61, 0.16); border-color: var(--amber); color: var(--amber); }
 .cm-home-practice .cm-streak-n .num { font-size: 44px; }
+
+/* 練習フィードの見出し＋「みんな / 自分だけ」切り替え */
+.cm-feed-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
+.cm-feed-head .section-title { margin: 0; }
+.cm-feed-head .segmented { flex: none; width: auto; }
+.cm-feed-head .segmented button { padding: 7px 12px; }

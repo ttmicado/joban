@@ -15,6 +15,7 @@ import {
   memberLabel,
   readForm,
   relDay,
+  segmented,
   sheet,
   toast,
   toastError,
@@ -649,12 +650,12 @@ function heatmap(s) {
   <div class="row cm-heat-legend small muted"><span class="grow">12週間前</span><span>少</span><i></i><i class="l2"></i><i class="l3"></i><span>多</span></div>`;
 }
 
-function streakCard(s, { compact = false } = {}) {
+function streakCard(s, { compact = false, other = null } = {}) {
   const fire = s.streak >= 7 ? "🔥🔥🔥" : s.streak >= 3 ? "🔥🔥" : s.streak ? "🔥" : "🌱";
   return html`<section class="card card-hero cm-streak ${s.streak ? "hot" : ""}">
     <div class="row gap">
       <div class="cm-streak-main grow">
-        <p class="small muted">${s.practicedToday ? "今日も練習した！" : s.streak ? "今日も続けよう" : "今日からはじめよう"}</p>
+        <p class="small muted">${other ? `${other}さんの練習` : s.practicedToday ? "今日も練習した！" : s.streak ? "今日も続けよう" : "今日からはじめよう"}</p>
         <p class="cm-streak-n">練習 ${cnt(s.streak, "amber")}<span>日連続</span> <span class="cm-fire">${fire}</span></p>
         ${s.bestStreak > s.streak ? html`<p class="small muted">自己ベスト ${s.bestStreak}日</p>` : s.streak > 1 ? html`<p class="small amber">自己ベスト更新中！</p>` : ""}
       </div>
@@ -693,26 +694,69 @@ function practiceRanking(r, tab) {
   </section>`;
 }
 
-async function practiceSection(box) {
+// 表示範囲（みんな / 自分だけ）は端末に覚えておく
+const SCOPE_KEY = "practice-scope";
+const loadScope = () => {
+  try {
+    return localStorage.getItem(SCOPE_KEY) === "me" ? "me" : "all";
+  } catch {
+    return "all";
+  }
+};
+
+// memberId を渡すと、その人の練習だけを表示する（選手ごとの練習ページ）
+async function practiceSection(box, { memberId = null, memberName = "" } = {}) {
   let rtab = "days";
-  const [{ practices, hasMore }, summary, ranking] = await Promise.all([get("/practices?limit=20"), get("/practices/summary"), get("/practices/ranking")]);
+  const single = memberId !== null;
+  const isMe = single && memberId === state.member.id;
+  let scope = single ? "member" : loadScope();
+  const feedQuery = () => {
+    const id = single ? memberId : scope === "me" ? state.member.id : null;
+    return id ? `&member=${id}` : "";
+  };
+  const summaryPath = single ? `/practices/summary?member=${memberId}` : "/practices/summary";
+  const [{ practices, hasMore }, summary, ranking] = await Promise.all([
+    get(`/practices?limit=20${feedQuery()}`),
+    get(summaryPath),
+    single ? null : get("/practices/ranking"),
+  ]);
   let feed = practices;
   let more = hasMore;
+  const emptyText = () =>
+    single
+      ? isMe
+        ? "まだ練習の記録がありません。素振り1回からでも記録しよう！"
+        : `${memberName}さんの練習の記録はまだありません`
+      : scope === "me"
+        ? "あなたの練習の記録はまだありません。素振り1回からでも記録しよう！"
+        : "まだ練習報告がありません。素振り1回からでも記録しよう！";
   const draw = () => {
     mount(
       box,
-      html`${streakCard(summary)}
-        <div data-rank-slot>${practiceRanking(ranking, rtab)}</div>
-        <p class="section-title"><span>みんなの練習</span></p>
+      html`${streakCard(summary, { other: single && !isMe ? memberName : null })}
+        ${single ? "" : html`<div data-rank-slot>${practiceRanking(ranking, rtab)}</div>`}
+        ${single
+          ? html`<p class="section-title"><span>${isMe ? "自分の練習" : `${memberName}さんの練習`}</span><span class="dim">新しい順</span></p>`
+          : html`<div class="cm-feed-head">
+              <p class="section-title"><span>${scope === "me" ? "自分の練習" : "みんなの練習"}</span></p>
+              ${segmented("pscope", [["all", "みんな"], ["me", "自分だけ"]], scope)}
+            </div>`}
         ${feed.length
           ? html`<div class="stack" data-feed>${feed.map(practiceCard)}</div>
               ${more ? html`<button class="btn btn-ghost btn-block" data-act="more">もっと見る</button>` : ""}`
-          : empty("まだ練習報告がありません。素振り1回からでも記録しよう！", { icon: "🏏" })}
-        ${fab({ label: "練習を記録", short: "記録", href: "#/practice/new" })}`,
+          : empty(emptyText(), { icon: "🏏" })}
+        ${!single || isMe ? fab({ label: "練習を記録", short: "記録", href: "#/practice/new" }) : ""}`,
     );
     countUp(box);
   };
   draw();
+
+  const reloadFeed = async () => {
+    const res = await get(`/practices?limit=20${feedQuery()}`);
+    feed = res.practices;
+    more = res.hasMore;
+    draw();
+  };
 
   const replaceCard = (p) => {
     feed = feed.map((x) => (x.id === p.id ? p : x));
@@ -725,6 +769,18 @@ async function practiceSection(box) {
   };
 
   const offs = [
+    on(box, "click", "[data-segmented=pscope] button", async (_, b) => {
+      if (b.dataset.value === scope) return;
+      scope = b.dataset.value;
+      try {
+        localStorage.setItem(SCOPE_KEY, scope);
+      } catch {}
+      try {
+        await reloadFeed();
+      } catch (err) {
+        toastError(err);
+      }
+    }),
     on(box, "click", "[data-act=rtab]", (_, b) => {
       rtab = b.dataset.value;
       mount(box.querySelector("[data-rank-slot]"), practiceRanking(ranking, rtab));
@@ -743,7 +799,7 @@ async function practiceSection(box) {
     ),
     on(box, "click", "[data-act=more]", (_, b) =>
       busy(b, async () => {
-        const res = await get(`/practices?limit=20&before=${feed.at(-1).id}`);
+        const res = await get(`/practices?limit=20&before=${feed.at(-1).id}${feedQuery()}`);
         feed = [...feed, ...res.practices];
         more = res.hasMore;
         draw();
@@ -764,7 +820,7 @@ async function practiceSection(box) {
             try {
               await del(`/practices/${p.id}`);
               feed = feed.filter((x) => x.id !== p.id);
-              Object.assign(summary, await get("/practices/summary"));
+              Object.assign(summary, await get(summaryPath));
               draw();
               toast("削除しました");
             } catch (err) {
@@ -987,6 +1043,15 @@ async function renderTeam(view, { query }) {
 }
 
 // 単独ページ（/wakeup, /practice）
+// 選手ごとの練習の記録（選手ページからリンク）
+async function renderMemberPractice(view, { params }) {
+  const id = Number(params.id);
+  const { member } = await get(`/members/${id}`);
+  const isMe = id === state.member.id;
+  setHeader({ title: isMe ? "自分の練習" : `${member.name}さんの練習`, back: `/players/${id}` });
+  return practiceSection(view, { memberId: id, memberName: member.name });
+}
+
 function standalone(fn, title, back) {
   return async (view, { params }) => {
     setHeader({ title, back });
@@ -1107,6 +1172,7 @@ export default {
     "/wakeup/:eventId": standalone(wakeSection, "起床報告", "/team?tab=wakeup"),
     "/practice": standalone(practiceSection, "練習報告", "/team?tab=practice"),
     "/practice/new": renderPracticeNew,
+    "/practice/member/:id": renderMemberPractice,
   },
   homeCards: [homeWake, homeNotice, homePractice],
   menu: [
