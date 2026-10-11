@@ -17,8 +17,8 @@ const mkGame = async (c, body = {}) => {
   return res.body.game;
 };
 
-function addEvent(t, { date = "2026-10-18", opponent = "川口クラブ", type = "game", venue = "荒川河川敷A" } = {}) {
-  const { lastId } = t.db.run(
+async function addEvent(t, { date = "2026-10-18", opponent = "川口クラブ", type = "game", venue = "荒川河川敷A" } = {}) {
+  const { lastId } = await t.db.run(
     "INSERT INTO events(type, title, date, venue, opponent, created_at, updated_at) VALUES(?, ?, ?, ?, ?, 0, 0)",
     type,
     `練習試合 vs ${opponent}`,
@@ -48,8 +48,8 @@ test("試合の作成は管理者だけ・season は日付の年・イニング�
 
 test("予定から作成: 日付・相手・球場を引き継ぎ、候補から消える・二重作成は不可", async () => {
   const { t, admin, taro } = await setup();
-  const evId = addEvent(t);
-  addEvent(t, { type: "practice" });
+  const evId = await addEvent(t);
+  await addEvent(t, { type: "practice" });
   assert.equal((await taro.get("/games/candidates")).status, 403);
   const cand = await admin.get("/games/candidates");
   assert.deepEqual(cand.body.events.map((e) => e.id), [evId]);
@@ -217,9 +217,9 @@ test("確定: game.finalized を emit・確定後は本人も編集不可（管�
 
 test("pending: スタメンに入っていて未入力の試合・スタメン未登録なら出席者が対象", async () => {
   const { t, admin, taro, jiro } = await setup();
-  const evId = addEvent(t);
-  t.db.run("INSERT INTO attendance(event_id, member_id, status, updated_at) VALUES(?, ?, 'yes', 0)", evId, taro.member.id);
-  t.db.run("INSERT INTO attendance(event_id, member_id, status, updated_at) VALUES(?, ?, 'no', 0)", evId, jiro.member.id);
+  const evId = await addEvent(t);
+  await t.db.run("INSERT INTO attendance(event_id, member_id, status, updated_at) VALUES(?, ?, 'yes', 0)", evId, taro.member.id);
+  await t.db.run("INSERT INTO attendance(event_id, member_id, status, updated_at) VALUES(?, ?, 'no', 0)", evId, jiro.member.id);
   const g = await mkGame(admin, { eventId: evId });
   const future = await mkGame(admin, { date: "2026-10-25", opponent: "未来" });
   await admin.put(`/games/${future.id}/lineup`, { lineup: [{ memberId: taro.member.id, orderNo: 1, position: "中" }] });
