@@ -27,45 +27,57 @@ LINE アカウントでログインするので、メンバーは登録や ID・
 
 ## 構成
 
-- **Cloudflare Workers**: 無料枠で動きます。画面とAPIを1つの Worker で配信します。
-- **データ**: Durable Object（SQLite）に保存します。
-- **画面**: ビルド不要の HTML/CSS/JavaScript です（`public/`）。
-- 設計と開発の約束ごとは [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) にまとめています。
+- **Vercel**: 画面（`public/`）の配信と API（`api/handler.js`）、15分ごとのリマインド（Vercel Cron）
+- **Neon（Postgres）**: データベース。テーブルは最初のアクセス時に自動で作られます
+- 画面はビルド不要の HTML/CSS/JavaScript です
+- 設計と開発の約束ごとは [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) にまとめています
 
 ## セットアップ
 
-### 1. LINE ミニアプリ（LIFF）を作る
+### 1. Vercel にプロジェクトを作る
+1. Vercel のダッシュボードで **Add New → Project** を選び、GitHub の `ttmicado/joban` を Import します。
+2. 設定は次のとおりです。
+   - Framework Preset: **Other**
+   - Build Command / Output Directory: 空欄のまま（`vercel.json` に書いてあります）
+3. **Deploy** を押します。表示された `https://<プロジェクト名>.vercel.app` を控えておきます。
+   - この時点ではまだデータベースも LINE の設定も無いので、アプリは動きません。
+
+### 2. Neon（データベース）をつなぐ
+1. プロジェクトの **Storage** タブ → **Create Database**（または Marketplace）→ **Neon** を選び、作成してプロジェクトに接続します。
+2. 環境変数 `DATABASE_URL` が自動で追加されます。
+   - 自分で作った Neon を使う場合は、Neon の接続文字列を `DATABASE_URL` として手で登録します。末尾が `-pooler` のホスト名のもの（プール接続）を推奨します。
+
+### 3. LINE ミニアプリ（LIFF）を作る
 1. [LINE Developers](https://developers.line.biz/console/) で **LINEミニアプリ** チャネルを作ります（身内で使うなら未認証のままでOK）。
 2. ウェブアプリ設定で、次のように設定します。
-   - エンドポイントURL: デプロイ先のURL（例 `https://joban-garapon.<あなた>.workers.dev/`）
+   - エンドポイントURL: `https://<プロジェクト名>.vercel.app/`
    - Scope: `openid` と `profile`
-   - **shareTargetPicker**: オン（結果やスタメンを LINE に共有する機能で使います）
-3. **LIFF ID** と **チャネルID** を控えておきます。
+   - **shareTargetPicker**: オン
+3. **LIFF ID** と **チャネルID** を控えます。
 
-### 2. デプロイ
-```bash
-npm install
-npx wrangler login
-```
+### 4. 環境変数を登録して再デプロイ
+Vercel のプロジェクト → **Settings → Environment Variables** に、次の値を登録します（Environment は Production）。
 
-`wrangler.jsonc` の `vars` に `LIFF_ID` と `LINE_CHANNEL_ID` を入れて、次を実行します。
+| 名前 | 値 |
+| --- | --- |
+| `LIFF_ID` | 3 の LIFF ID |
+| `LINE_CHANNEL_ID` | 3 のチャネルID |
+| `ADMIN_KEY` | ガラポン管理画面のパスワード（好きな文字列） |
+| `CRON_SECRET` | 長いランダムな文字列（Vercel Cron の呼び出し確認に使います） |
+| `LINE_MESSAGING_TOKEN` / `LINE_MESSAGING_SECRET` | （任意）LINE 公式アカウント連携を使う場合。[docs/LINE_SETUP.md](docs/LINE_SETUP.md) |
 
-```bash
-npx wrangler secret put ADMIN_KEY    # ガラポン管理画面のパスワード
-npm run deploy
-```
+`ALLOW_MOCK` は本番では登録しないでください（`true` にすると誰でもなりすましてログインできます）。
 
-### 3. グループに送る
+登録したら **Deployments** から最新のデプロイを **Redeploy** します。環境変数は再デプロイ後に反映されます。
+
+### 5. グループに送る
 `https://miniapp.line.me/<LIFF ID>`（または `https://liff.line.me/<LIFF ID>`）をチームの LINE グループに投稿します。
 各メンバーが開いて「参加する」を押せば準備完了です。
+- **最初に参加した人が管理者になります。** 監督かマネージャーが最初に開いてください。
 
-### 4. （任意）LINE 公式アカウントで自動通知
-手順は [docs/LINE_SETUP.md](docs/LINE_SETUP.md) を参照してください。
-```bash
-npx wrangler secret put LINE_MESSAGING_TOKEN
-npx wrangler secret put LINE_MESSAGING_SECRET
-```
-リマインドは Cron Trigger（15分ごと）で動きます。設定は `wrangler.jsonc` に入っています。
+### リマインドの定期実行について
+`vercel.json` の Cron で、15分ごとに `/api/cron` が呼ばれます。
+- 15分間隔の Cron は Vercel の有料プランが必要です（Hobby プランは1日1回まで）。
 
 ## ガラポン抽選会
 宿泊券などの抽選は `/garapon/` にあります（「その他」メニューからも開けます）。
@@ -75,15 +87,18 @@ npx wrangler secret put LINE_MESSAGING_SECRET
 ## ローカルで試す
 
 ```bash
-printf 'ALLOW_MOCK=true\nADMIN_KEY=test-admin\n' > .dev.vars
+npm install
+printf 'ALLOW_MOCK=true\nADMIN_KEY=test-admin\n' > .env
 npm run dev
 ```
 
-- `http://localhost:8787/?mock=kantoku&name=監督` を開くと、「監督」として参加できます（最初の人が管理者）。
+- DB は `DATABASE_URL` が無ければ PGlite（Postgres の WASM 版）を使い、`.data/dev` に保存します。Neon をつなぐ必要はありません。
+- `http://127.0.0.1:3000/?mock=kantoku&name=監督` を開くと、「監督」として参加できます（最初の人が管理者）。
 - `mock` の値を変えると別のメンバーになります。
-- 管理者のときは、成績が空の画面に出る「デモ用の成績を入れる」ボタン（または `POST /api/team/stats/dev-seed`）でダミーの成績を入れられます。`ALLOW_MOCK=true` のときだけ使えます。
+- 成績が空の画面に出る「デモ用の成績を入れる」ボタン（または `POST /api/team/stats/dev-seed`）でダミーの成績を入れられます（`ALLOW_MOCK=true` のときだけ）。
+- リマインドの確認: `curl http://127.0.0.1:3000/api/cron`
 
-テストは次のコマンドで実行します。
+テストは次のコマンドで実行します（PGlite を使うのでデータベースの準備は不要です）。
 ```bash
 npm test
 ```

@@ -1,3 +1,6 @@
 node_modules/
-.wrangler/
+.data/
+.env
+.env*.local
 .dev.vars
+.vercel/
