@@ -1,6 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "outputDirectory": "public",
+  "regions": [
+    "sin1"
+  ],
   "rewrites": [
     {
       "source": "/api/:path((?!handler$).*)",
