@@ -1,12 +1,11 @@
 // 統合後のレビューで見つかった不具合の再現テスト
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 import test, { afterEach, beforeEach } from "node:test";
-import { makeTeam } from "./helpers/team.js";
+import { makeTeam, sharedPglite } from "./helpers/team.js";
 import { HttpError, authenticate, safeEqualStr } from "../src/auth.js";
 import { readJson } from "../src/http.js";
-import { nodeDb } from "../src/team/db.js";
+import { pgliteDb, toPg } from "../src/db.js";
 import { isDate } from "../src/team/time.js";
 
 let calls = [];
@@ -62,11 +61,12 @@ test("本文が配列・文字列でも 500 にならず検証エラー", async 
   assert.equal((await admin.post("/games", "abc")).status, 400);
 });
 
-test("SQL パラメータの NaN・Infinity は NULL に正規化（DO の sql.exec は受け付けない）", () => {
-  const db = nodeDb(new DatabaseSync(":memory:"));
-  assert.equal(db.one("SELECT ? AS x", NaN).x, null);
-  assert.equal(db.one("SELECT ? AS x", Infinity).x, null);
-  assert.equal(db.one("SELECT ? AS x", 3).x, 3);
+test("SQL パラメータの NaN・Infinity は NULL に正規化・? は $n に変換（文字列内は除く）", async () => {
+  const db = pgliteDb(sharedPglite());
+  assert.equal((await db.one("SELECT ?::float8 AS x", NaN)).x, null);
+  assert.equal((await db.one("SELECT ?::float8 AS x", Infinity)).x, null);
+  assert.equal((await db.one("SELECT ?::bigint AS x", 3)).x, 3);
+  assert.equal(toPg("SELECT '?' AS a, ? AS b -- ?\n, ? AS c"), "SELECT '?' AS a, $1 AS b -- ?\n, $2 AS c");
 });
 
 test("実在しない日付は受け付けない", async () => {

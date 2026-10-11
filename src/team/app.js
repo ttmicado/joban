@@ -1,5 +1,5 @@
 // チームアプリのコア。ルーティング・認可・マイグレーション・イベント配信・cron を担当する。
-// Durable Object（src/team/do.js）とテスト（test/helpers/team.js）の両方から使う。
+// サーバー（src/server.js）とテスト（test/helpers/team.js）の両方から使う。DB は Postgres（src/db.js）。
 //
 // 機能モジュール（src/team/features/*.js）の形:
 //   export default {
@@ -14,10 +14,15 @@
 //   };
 //
 // handler(c) の c:
-//   db, env, now（JST: {ts,date,time,year,weekday}）, params, query, body, rawBody, headers,
-//   user（LINE プロフィール or null）, member（参加済みメンバー or null）, isAdmin,
-//   settings（チーム設定）, emit(name, payload), requireAdminOrSelf(memberId)
+//   db（await 必須。このリクエスト専用のトランザクション）, env, now（JST: {ts,date,time,year,weekday}）,
+//   params, query, body, rawBody, headers, user（LINE プロフィール or null）, member（参加済みメンバー or null）,
+//   isAdmin, settings（チーム設定）, await saveSettings(patch), emit(name, payload), await once(key, fn),
+//   requireAdminOrSelf(memberId)
 // handler は JSON にできる値を返す。JSON 以外は raw(body, { status, headers }) を返す。
+//
+// 1リクエスト = 1トランザクション。GET 以外のリクエストと cron はチーム全体の排他ロックを取り、
+// 直列に実行される（以前の Durable Object と同じく、同時更新の競合を気にしなくてよい）。
+// ハンドラーが例外を投げたらそのリクエストの変更はすべてロールバックされる。
 
 import { ApiError, badRequest, forbidden, notFound } from "./errors.js";
 import { DEFAULT_SETTINGS, coreMigrations } from "./schema.js";
@@ -25,8 +30,19 @@ import { jst } from "./time.js";
 
 export const raw = (body, { status = 200, headers = {} } = {}) => ({ __raw: true, status, headers, body });
 
+const LOCK_KEY = "team";
+
 export function createTeamApp({ db, env = {}, features = [], clock = () => Date.now(), log = console }) {
-  migrate(db, [...coreMigrations, ...features.flatMap((f) => f.migrations || [])]);
+  const migrations = [...coreMigrations, ...features.flatMap((f) => f.migrations || [])];
+  let ready = null;
+  // マイグレーションは最初のリクエスト時に1回だけ（失敗したら次のリクエストで再試行）
+  const ensureReady = () => {
+    ready ??= migrate(db, migrations).catch((err) => {
+      ready = null;
+      throw err;
+    });
+    return ready;
+  };
 
   const routes = [];
   for (const f of features) {
@@ -36,19 +52,22 @@ export function createTeamApp({ db, env = {}, features = [], clock = () => Date.
   }
 
   const settings = {
-    get() {
+    async get(db) {
       const out = { ...DEFAULT_SETTINGS };
-      for (const row of db.all("SELECT key, value FROM settings")) out[row.key] = JSON.parse(row.value);
+      for (const row of await db.all("SELECT key, value FROM settings")) out[row.key] = JSON.parse(row.value);
       if (!out.season) out.season = jst(clock()).year;
       if (!out.icsToken) {
         out.icsToken = crypto.randomUUID().replace(/-/g, "");
-        settings.set({ icsToken: out.icsToken });
+        // 同時に生成されても最初の値を採用する
+        await db.run("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO NOTHING", "icsToken", JSON.stringify(out.icsToken));
+        const row = await db.one("SELECT value FROM settings WHERE key = 'icsToken'");
+        out.icsToken = JSON.parse(row.value);
       }
       return out;
     },
-    set(patch) {
+    async set(db, patch) {
       for (const [k, val] of Object.entries(patch)) {
-        db.run(
+        await db.run(
           "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
           k,
           JSON.stringify(val),
@@ -57,15 +76,15 @@ export function createTeamApp({ db, env = {}, features = [], clock = () => Date.
     },
   };
 
-  function baseContext() {
+  async function baseContext(db) {
     const c = {
       db,
       env,
       now: jst(clock()),
-      settings: settings.get(),
-      saveSettings: (patch) => {
-        settings.set(patch);
-        c.settings = settings.get();
+      settings: await settings.get(db),
+      async saveSettings(patch) {
+        await settings.set(db, patch);
+        c.settings = await settings.get(db);
       },
       pending: [],
       emit(name, payload) {
@@ -73,9 +92,8 @@ export function createTeamApp({ db, env = {}, features = [], clock = () => Date.
       },
       // key ごとに1度だけ fn を実行（通知の二重送信防止）。実行したら true
       async once(key, fn) {
-        const hit = db.one("SELECT key FROM sent_log WHERE key = ?", key);
-        if (hit) return false;
-        db.run("INSERT INTO sent_log(key, at) VALUES(?, ?)", key, c.now.ts);
+        const { changes } = await db.run("INSERT INTO sent_log(key, at) VALUES(?, ?) ON CONFLICT(key) DO NOTHING", key, c.now.ts);
+        if (!changes) return false;
         await fn();
         return true;
       },
@@ -105,78 +123,96 @@ export function createTeamApp({ db, env = {}, features = [], clock = () => Date.
 
     // req: { method, path, query, body, user, rawBody?, headers? }
     async handle(req) {
-      const c = baseContext();
       try {
         const route = match(routes, req.method, req.path);
         if (!route) throw notFound("APIが見つかりません");
-        c.params = route.params;
-        c.query = req.query || {};
-        // 本文はオブジェクトだけ受け付ける（配列・文字列・数値などは空として扱う）
-        c.body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
-        c.rawBody = req.rawBody ?? null; // 署名検証が必要な webhook 用
-        c.headers = req.headers || {};
-        c.user = req.user || null;
-        c.member = c.user
-          ? db.one("SELECT * FROM members WHERE line_user_id = ? AND active = 1", c.user.userId)
-          : null;
-        c.isAdmin = c.member?.role === "admin";
-        c.requireAdminOrSelf = (memberId) => {
-          if (!c.isAdmin && Number(memberId) !== c.member?.id) throw forbidden("本人か管理者だけが編集できます");
-        };
-
-        const { auth } = route.route;
-        if (auth !== "public" && !c.user) throw new ApiError(401, "login_required", "LINEログインが必要です");
-        if ((auth === "member" || auth === "admin") && !c.member) {
-          throw new ApiError(403, "not_member", "先にチームに参加してください");
-        }
-        if (auth === "admin" && !c.isAdmin) throw forbidden("管理者だけが操作できます");
-
-        const result = await route.route.handler(c);
-        await flush(c);
-        if (result && result.__raw) return { status: result.status, headers: result.headers, body: result.body };
-        return { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify(result ?? { ok: true }) };
+        await ensureReady();
+        return await db.tx(async (tx) => {
+          if (req.method !== "GET") await tx.lock(LOCK_KEY);
+          return run(tx, route, req);
+        });
       } catch (err) {
-        if (err instanceof ApiError) {
-          return {
-            status: err.status,
-            headers: { "Content-Type": "application/json; charset=utf-8" },
-            body: JSON.stringify({ error: err.code, message: err.message }),
-          };
-        }
-        log.error(err);
-        return {
-          status: 500,
-          headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: JSON.stringify({ error: "server", message: "サーバーエラーが発生しました" }),
-        };
+        return errorResponse(err);
       }
     },
 
     async cron() {
-      const c = baseContext();
-      for (const f of features) {
-        if (!f.cron) continue;
-        try {
-          await f.cron(c);
-        } catch (err) {
-          log.error(`[${f.name}] cron failed`, err);
+      await ensureReady();
+      await db.tx(async (tx) => {
+        await tx.lock(LOCK_KEY);
+        const c = await baseContext(tx);
+        for (const f of features) {
+          if (!f.cron) continue;
+          try {
+            await f.cron(c);
+          } catch (err) {
+            log.error(`[${f.name}] cron failed`, err);
+          }
         }
-      }
-      await flush(c);
+        await flush(c);
+      });
+    },
+
+    // テスト・開発用: マイグレーション済みの DB を直接触る
+    async ready() {
+      await ensureReady();
+      return db;
     },
   };
+
+  async function run(db, route, req) {
+    const c = await baseContext(db);
+    c.params = route.params;
+    c.query = req.query || {};
+    // 本文はオブジェクトだけ受け付ける（配列・文字列・数値などは空として扱う）
+    c.body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    c.rawBody = req.rawBody ?? null; // 署名検証が必要な webhook 用
+    c.headers = req.headers || {};
+    c.user = req.user || null;
+    c.member = c.user
+      ? await db.one("SELECT * FROM members WHERE line_user_id = ? AND active = 1", c.user.userId)
+      : null;
+    c.isAdmin = c.member?.role === "admin";
+    c.requireAdminOrSelf = (memberId) => {
+      if (!c.isAdmin && Number(memberId) !== c.member?.id) throw forbidden("本人か管理者だけが編集できます");
+    };
+
+    const { auth } = route.route;
+    if (auth !== "public" && !c.user) throw new ApiError(401, "login_required", "LINEログインが必要です");
+    if ((auth === "member" || auth === "admin") && !c.member) {
+      throw new ApiError(403, "not_member", "先にチームに参加してください");
+    }
+    if (auth === "admin" && !c.isAdmin) throw forbidden("管理者だけが操作できます");
+
+    const result = await route.route.handler(c);
+    await flush(c);
+    if (result && result.__raw) return { status: result.status, headers: result.headers, body: result.body };
+    return { status: 200, headers: JSON_HEADERS, body: JSON.stringify(result ?? { ok: true }) };
+  }
+
+  function errorResponse(err) {
+    if (err instanceof ApiError) {
+      return { status: err.status, headers: JSON_HEADERS, body: JSON.stringify({ error: err.code, message: err.message }) };
+    }
+    log.error(err);
+    return { status: 500, headers: JSON_HEADERS, body: JSON.stringify({ error: "server", message: "サーバーエラーが発生しました" }) };
+  }
 }
 
-function migrate(db, migrations) {
-  db.exec("CREATE TABLE IF NOT EXISTS _migrations (id TEXT PRIMARY KEY, at INTEGER NOT NULL)");
-  const done = new Set(db.all("SELECT id FROM _migrations").map((r) => r.id));
-  for (const m of migrations) {
-    if (done.has(m.id)) continue;
-    db.tx(() => {
-      db.exec(m.sql);
-      db.run("INSERT INTO _migrations(id, at) VALUES(?, ?)", m.id, Date.now());
-    });
-  }
+const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" };
+
+async function migrate(db, migrations) {
+  await db.tx(async (tx) => {
+    // 複数のサーバーインスタンスが同時に起動しても1回だけ実行されるようにロック
+    await tx.lock("migrate");
+    await tx.exec("CREATE TABLE IF NOT EXISTS _migrations (id TEXT PRIMARY KEY, at BIGINT NOT NULL)");
+    const done = new Set((await tx.all("SELECT id FROM _migrations")).map((r) => r.id));
+    for (const m of migrations) {
+      if (done.has(m.id)) continue;
+      await tx.exec(m.sql);
+      await tx.run("INSERT INTO _migrations(id, at) VALUES(?, ?)", m.id, Date.now());
+    }
+  });
 }
 
 function compile(path) {

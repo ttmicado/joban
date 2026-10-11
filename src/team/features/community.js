@@ -17,58 +17,58 @@ const migrations = [
     sql: `
 -- お知らせ
 CREATE TABLE IF NOT EXISTS notices (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  author_id INTEGER NOT NULL,
+  id BIGSERIAL PRIMARY KEY,
+  author_id BIGINT NOT NULL,
   category TEXT NOT NULL DEFAULT 'info', -- info（連絡） / important（重要） / chat（雑談）
   title TEXT,
   body TEXT NOT NULL,
-  pinned INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  pinned BIGINT NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS notices_created ON notices(created_at);
 
 -- お知らせの既読・了解（開いたら read_at、「了解！」で ack_at）
 CREATE TABLE IF NOT EXISTS notice_reads (
-  notice_id INTEGER NOT NULL,
-  member_id INTEGER NOT NULL,
-  read_at INTEGER NOT NULL,
-  ack_at INTEGER,
+  notice_id BIGINT NOT NULL,
+  member_id BIGINT NOT NULL,
+  read_at BIGINT NOT NULL,
+  ack_at BIGINT,
   PRIMARY KEY (notice_id, member_id)
 );
 
 -- 起床報告（予定×メンバーで1行。at = 起床時刻）
 CREATE TABLE IF NOT EXISTS wakeups (
-  event_id INTEGER NOT NULL,
-  member_id INTEGER NOT NULL,
-  at INTEGER NOT NULL,                   -- 起きた時刻（epoch ms）
+  event_id BIGINT NOT NULL,
+  member_id BIGINT NOT NULL,
+  at BIGINT NOT NULL,                   -- 起きた時刻（epoch ms）
   comment TEXT,                          -- 最新のひとこと
-  left_at INTEGER,                       -- 出発
-  arrived_at INTEGER,                    -- 到着
-  late_minutes INTEGER,                  -- 遅れる見込み（分）
-  late_at INTEGER,
-  updated_at INTEGER NOT NULL,
+  left_at BIGINT,                       -- 出発
+  arrived_at BIGINT,                    -- 到着
+  late_minutes BIGINT,                  -- 遅れる見込み（分）
+  late_at BIGINT,
+  updated_at BIGINT NOT NULL,
   PRIMARY KEY (event_id, member_id)
 );
 CREATE INDEX IF NOT EXISTS wakeups_event ON wakeups(event_id, at);
 
 -- 練習報告
 CREATE TABLE IF NOT EXISTS practices (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  member_id INTEGER NOT NULL,
+  id BIGSERIAL PRIMARY KEY,
+  member_id BIGINT NOT NULL,
   date TEXT NOT NULL,
   items TEXT NOT NULL DEFAULT '[]',      -- JSON [{kind, amount, unit}]
   comment TEXT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS practices_date ON practices(date);
 CREATE INDEX IF NOT EXISTS practices_member ON practices(member_id, date);
 
 CREATE TABLE IF NOT EXISTS practice_likes (
-  practice_id INTEGER NOT NULL,
-  member_id INTEGER NOT NULL,
-  at INTEGER NOT NULL,
+  practice_id BIGINT NOT NULL,
+  member_id BIGINT NOT NULL,
+  at BIGINT NOT NULL,
   PRIMARY KEY (practice_id, member_id)
 );
 `,

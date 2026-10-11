@@ -723,19 +723,19 @@ CREATE TABLE IF NOT EXISTS line_groups (
   type TEXT NOT NULL DEFAULT 'group',    -- group / room
   name TEXT,                             -- グループ名（GET /v2/bot/group/{id}/summary）
   picture TEXT,
-  joined INTEGER NOT NULL DEFAULT 1,     -- 0: 公式アカウントが退出した
-  first_seen_at INTEGER NOT NULL,
-  last_seen_at INTEGER NOT NULL
+  joined BIGINT NOT NULL DEFAULT 1,     -- 0: 公式アカウントが退出した
+  first_seen_at BIGINT NOT NULL,
+  last_seen_at BIGINT NOT NULL
 );
 
 -- 送信履歴（直近50件）
 CREATE TABLE IF NOT EXISTS line_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id BIGSERIAL PRIMARY KEY,
   kind TEXT NOT NULL,
   title TEXT NOT NULL,
-  ok INTEGER NOT NULL,
+  ok BIGINT NOT NULL,
   detail TEXT,
-  at INTEGER NOT NULL
+  at BIGINT NOT NULL
 );
 `,
     },

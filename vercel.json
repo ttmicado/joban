@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "",
+  "outputDirectory": "public",
+  "cleanUrls": false,
+  "rewrites": [
+    { "source": "/api/:path((?!handler$).*)", "destination": "/api/handler?__path=/api/:path" },
+    { "source": "/ics/:file", "destination": "/api/handler?__path=/ics/:file" }
+  ],
+  "crons": [{ "path": "/api/cron", "schedule": "*/15 * * * *" }],
+  "functions": { "api/handler.js": { "maxDuration": 30 } }
+}

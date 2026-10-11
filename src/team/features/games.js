@@ -308,7 +308,7 @@ function getLineup(c) {
   );
   const members = c.db.all(
     `SELECT * FROM members WHERE active = 1
-     ORDER BY is_guest, CASE WHEN number GLOB '[0-9]*' THEN CAST(number AS INTEGER) ELSE 9999 END, id`,
+     ORDER BY is_guest, CASE WHEN number GLOB '[0-9]*' THEN CAST(number AS BIGINT) ELSE 9999 END, id`,
   );
   const rank = { yes: 0, maybe: 1, none: 2, no: 3 };
   const candidates = members
@@ -518,9 +518,9 @@ export default {
       sql: `
 -- 1打席ごとの結果（成績入力画面で並びを再編集するため）。result は AT_BAT のキー
 CREATE TABLE IF NOT EXISTS games_at_bats (
-  game_id INTEGER NOT NULL,
-  member_id INTEGER NOT NULL,
-  seq INTEGER NOT NULL,
+  game_id BIGINT NOT NULL,
+  member_id BIGINT NOT NULL,
+  seq BIGINT NOT NULL,
   result TEXT NOT NULL,
   PRIMARY KEY (game_id, member_id, seq)
 );`,

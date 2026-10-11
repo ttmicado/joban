@@ -1,19 +1,35 @@
-// テスト用: node:sqlite のメモリ DB でチームアプリを動かすヘルパー
+// テスト用: PGlite（WASM 版 Postgres）でチームアプリを動かすヘルパー
+//   PGlite はプロセスごとに1つだけ起動し、makeTeam() ごとに別のスキーマを使う（起動が重いため）。
 //   const t = makeTeam();
 //   const admin = await t.join("監督");          // LINE ユーザーを作って参加（最初の人は管理者）
 //   const res = await admin.post("/events", {...}); // → { status, body }
 //   t.setNow("2026-10-18T06:00")                    // JST で時刻を固定
-import { DatabaseSync } from "node:sqlite";
+//   await t.db.run("INSERT INTO ...", ...)          // DB を直接触る（マイグレーション済み。await 必須）
+import { PGlite } from "@electric-sql/pglite";
+import { pgliteDb } from "../../src/db.js";
 import { createTeamApp } from "../../src/team/app.js";
-import { nodeDb } from "../../src/team/db.js";
 import { features as allFeatures } from "../../src/team/features/index.js";
 
+let shared = null;
+let schemaSeq = 0;
+export function sharedPglite() {
+  shared ??= new PGlite();
+  return shared;
+}
+
 export function makeTeam({ features = allFeatures, env = {}, now = "2026-10-11T12:00" } = {}) {
-  const db = nodeDb(new DatabaseSync(":memory:"));
+  const pg = sharedPglite();
+  const schema = `t${process.pid}_${++schemaSeq}`;
+  const created = pg.exec(`CREATE SCHEMA "${schema}"`);
+  const raw = pgliteDb(pg, { schema });
+  // スキーマ作成を待ってから使う
+  const base = { ...raw };
+  for (const k of ["all", "one", "run", "exec", "tx"]) base[k] = async (...a) => (await created, raw[k](...a));
+  const appDb = base;
   let ts = jstTs(now);
   const sent = [];
   const app = createTeamApp({
-    db,
+    db: appDb,
     env,
     features,
     clock: () => ts,
@@ -39,6 +55,10 @@ export function makeTeam({ features = allFeatures, env = {}, now = "2026-10-11T1
   };
 
   let seq = 0;
+  // テストから直接使う DB（マイグレーションが済んでから実行される）
+  const db = {};
+  for (const k of ["all", "one", "run", "exec", "tx"]) db[k] = async (...a) => (await app.ready(), appDb[k](...a));
+
   return {
     app,
     db,

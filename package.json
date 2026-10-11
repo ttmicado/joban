@@ -1,15 +1,21 @@
 {
-  "name": "joban-garapon",
+  "name": "joban-team",
   "version": "1.0.0",
   "private": true,
-  "description": "LINEミニアプリ 宿泊券ガラポン抽選",
+  "description": "草野球チーム運営アプリ（LINEミニアプリ）",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "node scripts/dev.js",
     "test": "node --no-warnings --test test/*.test.js"
   },
   "devDependencies": {
-    "wrangler": "4.149.0"
+    "@electric-sql/pglite": "^0.5.8",
+    "@vercel/routing-utils": "^6.6.0"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

@@ -112,7 +112,7 @@ function listEvents(c, where, params, order, limit = 200) {
 const activeRoster = (db) =>
   db.all(
     `SELECT * FROM members WHERE active = 1
-     ORDER BY is_guest, CASE WHEN number GLOB '[0-9]*' THEN CAST(number AS INTEGER) ELSE 9999 END, id`,
+     ORDER BY is_guest, CASE WHEN number GLOB '[0-9]*' THEN CAST(number AS BIGINT) ELSE 9999 END, id`,
   );
 
 // 予定の詳細（出欠一覧・自分の出欠・関連する試合）
@@ -416,45 +416,45 @@ export default {
       id: "schedule-001",
       sql: `
 CREATE TABLE IF NOT EXISTS venues (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id BIGSERIAL PRIMARY KEY,
   name TEXT NOT NULL,
   address TEXT,
   url TEXT,                              -- 地図URL
   note TEXT,                             -- 駐車場・注意事項など
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS venues_name ON venues(name);
 
 -- 日程調整
 CREATE TABLE IF NOT EXISTS polls (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id BIGSERIAL PRIMARY KEY,
   title TEXT NOT NULL,
   note TEXT,
   deadline TEXT,                         -- 回答締切日
   status TEXT NOT NULL DEFAULT 'open',   -- open / decided / closed
-  decided_option_id INTEGER,
-  event_id INTEGER,                      -- 決定して作った予定
-  created_by INTEGER,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  decided_option_id BIGINT,
+  event_id BIGINT,                      -- 決定して作った予定
+  created_by BIGINT,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS poll_options (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  poll_id INTEGER NOT NULL,
+  id BIGSERIAL PRIMARY KEY,
+  poll_id BIGINT NOT NULL,
   date TEXT NOT NULL,
   time TEXT,                             -- 開始時間（任意）
   note TEXT,                             -- 球場などのメモ
-  sort INTEGER NOT NULL DEFAULT 0
+  sort BIGINT NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS poll_options_poll ON poll_options(poll_id);
 -- 回答（1人1行。answers は {候補id: "yes"|"maybe"|"no"} の JSON）
 CREATE TABLE IF NOT EXISTS poll_answers (
-  poll_id INTEGER NOT NULL,
-  member_id INTEGER NOT NULL,
+  poll_id BIGINT NOT NULL,
+  member_id BIGINT NOT NULL,
   answers TEXT NOT NULL,
   comment TEXT,
-  updated_at INTEGER NOT NULL,
+  updated_at BIGINT NOT NULL,
   PRIMARY KEY (poll_id, member_id)
 );
 `,

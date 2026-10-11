@@ -16,11 +16,15 @@ public/                     静的ファイル（ビルド不要の ES Modules�
   app/features/<name>.js    機能ごとの画面
   app/features/<name>.css   機能ごとのスタイル（index.html で読み込み済み）
   garapon/                  ガラポン抽選会（独立したページ）
+api/handler.js              Vercel Functions の入口（vercel.json の rewrite で /api/* と /ics/* が来る）
+vercel.json                 静的配信（public/）・rewrite・Cron（15分ごとに /api/cron）
+scripts/dev.js              ローカル開発サーバー（静的ファイル + API。DB は PGlite か DATABASE_URL）
 src/
-  worker.js                 Cloudflare Worker（/api/team/* → Team DO、/api/garapon/*、/ics/*、/api/line/webhook、cron）
+  server.js                 HTTP の入口（/api/team/*、/api/garapon/*、/ics/*、/api/line/webhook、/api/cron）
+  db.js                     Postgres ラッパー（本番 Neon = node-postgres、テスト・ローカル = PGlite）
   auth.js                   LINE アクセストークン検証
+  garapon/                  ガラポン（状態は garapon_state テーブルの JSON）
   team/app.js               ルーティング・認可・マイグレーション・イベント配信・cron
-  team/db.js                SQLite ラッパー（DO と node:sqlite 共通）
   team/schema.js            共通テーブル定義
   team/validate.js          入力検証ヘルパー
   team/time.js              JST の日付・時刻ヘルパー
@@ -30,7 +34,23 @@ test/
   <name>.test.js            機能ごとのテスト
 ```
 
-データはすべて Durable Object `Team`（SQLite）1つに入る。リクエストは直列処理なので競合を気にしなくてよい。
+ホスティングは Vercel、データベースは Neon（Postgres）。
+1リクエスト = 1トランザクション。GET 以外と cron はチーム全体の排他ロック（pg_advisory_xact_lock）を取って直列に実行されるので、
+同時更新の競合は気にしなくてよい。ハンドラーが例外を投げるとそのリクエストの変更はすべてロールバックされる。
+
+### DB（Postgres）の書き方
+- DB 操作はすべて非同期: `await c.db.all(sql, ...params)` / `await c.db.one(...)` / `await c.db.run(...)` / `await c.db.tx(async (tx) => …)`
+  （c.db はすでにトランザクション内なので、tx は内側をそのまま実行するだけ）。DB を使う関数は async にして必ず await する。
+  `rows.map(r => c.db.one(...))` のような書き方はできないので for ループか `Promise.all` を使う（同じ接続なので for ループ推奨）。
+- プレースホルダは `?` のままでよい（`$1, $2…` に自動変換）。`run` は INSERT に自動で `RETURNING *` を付け、`lastId` を返す。
+- 型: 主キーは `BIGSERIAL PRIMARY KEY`、数値・真偽(0/1)・epoch ms は `BIGINT`（INTEGER だと ms が入らない）。BIGINT/NUMERIC は number で返る。
+- SQLite との違いに注意: `INSERT OR IGNORE` → `ON CONFLICT DO NOTHING`、`INSERT OR REPLACE` → `ON CONFLICT(...) DO UPDATE`、
+  `IFNULL` → `COALESCE`、`GROUP_CONCAT` → `string_agg`、`MAX(a,b)`（2引数）→ `GREATEST`、`MIN(a,b)` → `LEAST`、`GLOB` → `~`、
+  `strftime`/`date()` → `to_char` や文字列関数、`json_extract` → `->>`、`sqlite_master` → `to_regclass('name')`、
+  `last_insert_rowid()` → `RETURNING id`。
+- Postgres は厳密: SELECT の非集約列はすべて GROUP BY に入れる。camelCase の別名は小文字になるので `AS "gameId"` と引用符で囲む。
+  昇順の NULL は SQLite では先頭・Postgres では末尾（必要なら `NULLS FIRST`）。`LIKE` は大文字小文字を区別する（必要なら `ILIKE`）。
+  整数同士の割り算は切り捨て（率は `::float8` か JS 側で計算）。文字列と数値の比較は型エラーになる。
 
 ## 機能の担当範囲
 
@@ -68,11 +88,11 @@ export default {
 
 - `auth`: `public`（ログイン不要）/ `user`（LINE ログインのみ）/ `member`（既定。チーム参加済み）/ `admin`
 - handler の引数 `c`: `db` `env` `now`（JST `{ts,date,time,year,weekday}`）`params` `query` `body` `rawBody` `headers`
-  `user` `member`（members テーブルの行）`isAdmin` `settings` `saveSettings(patch)` `emit(name, payload)`
-  `once(key, fn)`（二重実行防止）`requireAdminOrSelf(memberId)`
+  `user` `member`（members テーブルの行）`isAdmin` `settings` `await saveSettings(patch)` `emit(name, payload)`
+  `await once(key, fn)`（二重実行防止）`requireAdminOrSelf(memberId)`
 - 戻り値はそのまま JSON になる。JSON 以外は `import { raw } from "../app.js"` の `raw(body, { headers })`
 - エラーは `throw badRequest("メッセージ")` など（`errors.js`）。メッセージは利用者向けの日本語で
-- DB: `c.db.all(sql, ...params)` `c.db.one(...)` `c.db.run(...)` → `{changes, lastId}` `c.db.tx(fn)`
+- DB: `await c.db.all(sql, ...params)` `await c.db.one(...)` `await c.db.run(...)` → `{changes, lastId, rows}`（上の「DB の書き方」参照）
 - メンバーを返すときは `publicMember(row)`（`features/members.js`）を使い、LINE の userId は外に出さない
 - マイグレーション id は `<機能名>-001` から。適用済みのものは書き換えず、追加で変更する
 - 日付は `"YYYY-MM-DD"`、時刻は `"HH:MM"`（JST の文字列）。`*_at` は epoch ms
@@ -146,15 +166,16 @@ export default {
 ## 開発・テスト
 
 ```bash
-npm test                                  # 全テスト（node:sqlite で API を直接テスト）
-npx wrangler dev --port 8787 --persist-to .wrangler/state   # ローカル起動（.dev.vars に ALLOW_MOCK=true）
-# ブラウザで http://127.0.0.1:8787/?mock=taro&name=太郎  （mock の値ごとに別ユーザー。最初の人が管理者）
+npm test                                          # 全テスト（PGlite = WASM 版 Postgres で API を直接テスト）
+node scripts/dev.js --port 3000 --data .data/dev  # ローカル起動（.env か .dev.vars に ALLOW_MOCK=true）
+# ブラウザで http://127.0.0.1:3000/?mock=taro&name=太郎  （mock の値ごとに別ユーザー。最初の人が管理者）
+# cron を手動実行: curl http://127.0.0.1:3000/api/cron （ALLOW_MOCK=true のときのみ）
 ```
 
 テストは `test/helpers/team.js` の `makeTeam()` を使う:
 
 ```js
-const t = makeTeam({ now: "2026-10-18T06:00" });
+const t = makeTeam({ now: "2026-10-18T06:00" });   // t.db も async（await t.db.run(...)）
 const admin = await t.join("監督");        // 最初の参加者は管理者
 const taro = await t.join("太郎");
 const res = await admin.post("/events", { title: "練習試合", date: "2026-10-25" });
