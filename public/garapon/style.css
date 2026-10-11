@@ -315,6 +315,11 @@ b { font-weight: 800; }
 .result-actions { width: 100%; margin-top: auto; padding-top: 30px; display: flex; flex-direction: column; gap: 14px; }
 
 /* ---------- みんなの結果 ---------- */
+.back-team {
+  position: fixed; left: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); z-index: 20;
+  padding: 8px 14px; border-radius: 99px; background: rgba(27,13,43,.85); color: var(--cream);
+  font-weight: 800; font-size: 13px; text-decoration: none; box-shadow: 0 0 0 1px rgba(255,255,255,.2);
+}
 .board-fab {
   position: fixed; right: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); z-index: 20;
   display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 99px; border: 0;
