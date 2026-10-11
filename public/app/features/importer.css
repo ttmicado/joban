@@ -1,1 +1,41 @@
-/* importer 機能のスタイル */
+/* importer 機能のスタイル（teams.one から取り込み） */
+.imp-hero { text-align: left; }
+.imp-hero-ic { font-size: 34px; line-height: 1; margin-bottom: 6px; }
+.imp-points { margin: 10px 0 0; padding-left: 1.2em; display: grid; gap: 4px; color: var(--muted); }
+
+.imp-progress { text-align: center; display: grid; gap: 10px; justify-items: center; padding: 22px 16px; }
+.imp-ball {
+  width: 42px; height: 42px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #fff, #dfe6f5 70%);
+  box-shadow: inset -4px -4px 8px rgba(0, 0, 0, 0.18); position: relative; animation: imp-bounce 0.9s ease-in-out infinite;
+}
+.imp-ball::before, .imp-ball::after {
+  content: ""; position: absolute; top: 4px; bottom: 4px; width: 14px; border: 2px dashed var(--red); border-radius: 50%;
+}
+.imp-ball::before { left: -6px; border-left-color: transparent; border-top-color: transparent; border-bottom-color: transparent; }
+.imp-ball::after { right: -6px; border-right-color: transparent; border-top-color: transparent; border-bottom-color: transparent; }
+@keyframes imp-bounce { 0%, 100% { transform: translateY(0) rotate(0); } 50% { transform: translateY(-10px) rotate(180deg); } }
+.imp-bar { width: 100%; height: 6px; border-radius: 3px; background: var(--bg-2); overflow: hidden; }
+.imp-bar span { display: block; height: 100%; width: 40%; border-radius: 3px; background: linear-gradient(90deg, var(--green), var(--amber)); animation: imp-slide 1.4s ease-in-out infinite; }
+@keyframes imp-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+@media (prefers-reduced-motion: reduce) { .imp-ball, .imp-bar span { animation: none; } }
+
+.imp-tiles { margin: 12px 0 8px; }
+.imp-breakdown { line-height: 1.8; color: var(--muted); }
+.imp-breakdown b { color: var(--text); font-family: var(--num); font-size: 17px; font-weight: 400; }
+.imp-done { border-color: rgba(39, 209, 127, 0.4); }
+.imp-note { margin: 8px 2px 0; line-height: 1.6; }
+
+.imp-warn summary, .imp-year summary { display: flex; gap: 8px; align-items: center; cursor: pointer; min-height: 44px; list-style: none; }
+.imp-warn summary::-webkit-details-marker, .imp-year summary::-webkit-details-marker { display: none; }
+.imp-warn summary::after, .imp-year summary::after { content: "›"; margin-left: auto; color: var(--dim); transition: transform 0.2s; }
+.imp-warn[open] summary::after, .imp-year[open] summary::after { transform: rotate(90deg); }
+.imp-warn ul { margin: 8px 0 0; padding-left: 1.2em; display: grid; gap: 6px; color: var(--muted); line-height: 1.5; }
+.imp-year { margin-bottom: 8px; }
+.imp-year summary { padding: 0 4px; }
+
+.imp-uni { min-width: 32px; text-align: center; }
+.imp-chips { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; flex: none; }
+.imp-score { font-size: 22px; color: var(--amber); flex: none; }
+.imp-score small { font-size: 14px; margin: 0 2px; color: var(--muted); }
+.imp-links { margin: 14px 0; }
+.imp-savebar { margin-top: 14px; }
