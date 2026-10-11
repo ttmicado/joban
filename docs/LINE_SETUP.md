@@ -15,22 +15,27 @@ LINE 公式アカウント（Messaging API）をチームの LINE グループ�
 3. 作成したチャネルの「チャネル基本設定」で **チャネルシークレット** を確認
 4. 「Messaging API設定」の一番下で **チャネルアクセストークン（長期）** を発行
 
-## 2. シークレットを Workers に登録する
+## 2. シークレットを Vercel に登録する
 
-```bash
-npx wrangler secret put LINE_MESSAGING_TOKEN    # チャネルアクセストークン（長期）
-npx wrangler secret put LINE_MESSAGING_SECRET   # チャネルシークレット
-```
+1. [Vercel](https://vercel.com/) のプロジェクト → **Settings → Environment Variables** を開く
+2. 次の 2 つを追加する（Environment は Production。プレビューでも使うなら Preview にも）
 
-- 値はコードや wrangler.jsonc に書かないでください（API の応答やログにも出しません）
-- 通知の「アプリで開く」ボタンには `LIFF_ID`（wrangler.jsonc の vars）を使います。未設定だとボタンが付きません
-- ローカルで試すときは `.dev.vars` に書くか、`npx wrangler dev --var LINE_MESSAGING_SECRET:xxx` で渡します
+| 名前 | 値 |
+| --- | --- |
+| `LINE_MESSAGING_TOKEN` | チャネルアクセストークン（長期） |
+| `LINE_MESSAGING_SECRET` | チャネルシークレット |
+
+3. 環境変数は**再デプロイ後**に反映されます。Deployments → 最新のデプロイの「…」→ **Redeploy** を実行
+
+- 値はコードや vercel.json に書かないでください（API の応答やログにも出しません）
+- 通知の「アプリで開く」ボタンには環境変数 `LIFF_ID` を使います。未設定だとボタンが付きません
+- ローカルで試すときは `.dev.vars` に `LINE_MESSAGING_SECRET=xxx` のように書いて `node scripts/dev.js` で起動します
 
 ## 3. Webhook URL を設定する
 
 「Messaging API設定」の **Webhook設定** で:
 
-1. Webhook URL に `https://<アプリのドメイン>/api/line/webhook` を入力
+1. Webhook URL に `https://<Vercel のドメイン>/api/line/webhook` を入力（例: `https://joban.vercel.app/api/line/webhook`）
    （アプリの「その他 → LINE通知」画面にコピーできる URL が表示されます）
 2. 「検証」を押して「成功」と出ることを確認
 3. **Webhookの利用** をオン
@@ -86,6 +91,12 @@ npx wrangler secret put LINE_MESSAGING_SECRET   # チャネルシークレット
 | 成績入力リマインド | 試合の翌日 20:00（成績が未入力＝打席 0 の出場者の名前） |
 
 リマインドは 15 分ごとの cron で判定し、同じ内容は二度送りません。
+
+cron は Vercel Cron が `GET /api/cron` を 15 分ごとに呼びます（設定は `vercel.json` の `crons`）。
+- Environment Variables に `CRON_SECRET`（長いランダム文字列）を登録してください。Vercel Cron は
+  `Authorization: Bearer <CRON_SECRET>` を付けて呼び、一致しないリクエストは拒否します
+- Hobby プランでは Cron は 1 日 1 回までしか動かないため、15 分ごとのリマインド（起床チェックなど）を使うには Pro プランが必要です
+- ローカル（`.dev.vars` に `ALLOW_MOCK=true`）では `curl http://127.0.0.1:<ポート>/api/cron` で手動実行できます
 
 ## グループで使えるコマンド
 

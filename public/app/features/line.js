@@ -68,7 +68,7 @@ function memberView(view) {
 function setupSteps(webhookUrl) {
   const steps = [
     ["LINE Developers で Messaging API チャネルを作成", "LIFF と同じプロバイダーに作ると、メンバーの紐づけがスムーズです"],
-    ["チャネルアクセストークンとシークレットを登録", raw(`ターミナルで <code>npx wrangler secret put LINE_MESSAGING_TOKEN</code> と <code>LINE_MESSAGING_SECRET</code>`)],
+    ["チャネルアクセストークンとシークレットを登録", raw(`Vercel のプロジェクト → Settings → Environment Variables に <code>LINE_MESSAGING_TOKEN</code> と <code>LINE_MESSAGING_SECRET</code> を登録して Redeploy`)],
     ["Webhook URL を設定して「Webhookの利用」をオン", webhookUrl],
     ["応答メッセージ・あいさつメッセージをオフ", "LINE Official Account Manager の「応答設定」から"],
     ["「グループトーク・複数人トークへの参加を許可する」をオン", "LINE Official Account Manager の「アカウント設定」から"],

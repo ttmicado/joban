@@ -1,12 +1,13 @@
 // LINE 公式アカウント（Messaging API）連携: グループへの自動通知・リマインド・トークのコマンド応答
 //
-// 環境変数（wrangler secret）
+// 環境変数（Vercel の Environment Variables）
 //   LINE_MESSAGING_TOKEN  チャネルアクセストークン（push / reply / グループ名取得）
 //   LINE_MESSAGING_SECRET チャネルシークレット（webhook の署名検証）
 //   LIFF_ID               「アプリで開く」ボタンのリンク先（https://liff.line.me/<LIFF_ID>/#/...）
 // どれも未設定なら何もしない（エラーにしない）。
 //
 // 設定は settings テーブルの key "line" に { targetGroupId, notify: { <種類>: true/false, notice: "off|important|all" } }。
+import { raw } from "../app.js";
 import { ApiError, badRequest } from "../errors.js";
 import { addDays, toTs } from "../time.js";
 import { battingRates } from "../../../public/app/lib/stats.js";
@@ -81,20 +82,20 @@ async function send(c, kind, title, messages) {
     r = { ok: false, status: 0, data: { message: err?.message || "network error" } };
   }
   const detail = r.ok ? null : describeError(r);
-  c.db.run("INSERT INTO line_log(kind, title, ok, detail, at) VALUES(?, ?, ?, ?, ?)", kind, clip(title, 100), r.ok ? 1 : 0, detail, c.now.ts);
-  c.db.run("DELETE FROM line_log WHERE id NOT IN (SELECT id FROM line_log ORDER BY id DESC LIMIT 50)");
+  await c.db.run("INSERT INTO line_log(kind, title, ok, detail, at) VALUES(?, ?, ?, ?, ?)", kind, clip(title, 100), r.ok ? 1 : 0, detail, c.now.ts);
+  await c.db.run("DELETE FROM line_log WHERE id NOT IN (SELECT id FROM line_log ORDER BY id DESC LIMIT 50)");
   if (!r.ok) c.log.error?.(`[line] push failed (${kind}): ${detail}`);
   return r.ok;
 }
 
 // ---------------------------------------------------------------- 集計ヘルパー
-const memberName = (c, id) => (id ? c.db.one("SELECT name FROM members WHERE id = ?", id)?.name || null : null);
+const memberName = async (c, id) => (id ? (await c.db.one("SELECT name FROM members WHERE id = ?", id))?.name || null : null);
 
-function attendanceSummary(c, eventId) {
-  const roster = c.db.all("SELECT id, name FROM members WHERE active = 1 AND is_guest = 0 ORDER BY id");
-  const rows = c.db.all(
+async function attendanceSummary(c, eventId) {
+  const roster = await c.db.all("SELECT id, name FROM members WHERE active = 1 AND is_guest = 0 ORDER BY id");
+  const rows = await c.db.all(
     `SELECT a.member_id, a.status, m.name FROM attendance a JOIN members m ON m.id = a.member_id
-     WHERE a.event_id = ? AND m.active = 1 ORDER BY a.updated_at`,
+     WHERE a.event_id = ? AND m.active = 1 ORDER BY a.updated_at, a.member_id`,
     eventId,
   );
   const by = { yes: [], maybe: [], no: [] };
@@ -104,7 +105,7 @@ function attendanceSummary(c, eventId) {
   return { yes: by.yes.length, maybe: by.maybe.length, no: by.no.length, yesNames: by.yes, maybeNames: by.maybe, noNames: by.no, unanswered };
 }
 
-function nextEvent(c) {
+async function nextEvent(c) {
   return c.db.one(
     `SELECT * FROM events WHERE status = 'scheduled' AND date >= ?
      ORDER BY date, COALESCE(meet_time, start_time, '99:99'), id LIMIT 1`,
@@ -112,25 +113,23 @@ function nextEvent(c) {
   );
 }
 
-function tableExists(c, name) {
-  try {
-    return !!c.db.one("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", name);
-  } catch {
-    return false;
-  }
+// to_regclass は存在しなければ NULL を返す（例外にならないのでトランザクションを壊さない）
+async function tableExists(c, name) {
+  const row = await c.db.one("SELECT to_regclass(?) IS NOT NULL AS ok", name);
+  return !!row?.ok;
 }
 
 const fmtAvg = (v) => (v === null ? "-" : v >= 1 ? v.toFixed(3) : v.toFixed(3).slice(1));
 
-function battingLeaders(c) {
-  const season = c.settings.season;
-  const teamGames = c.db.one("SELECT COUNT(*) AS n FROM games WHERE season = ? AND status = 'final'", season).n;
-  const rows = c.db.all(
+async function battingLeaders(c) {
+  const season = Number(c.settings.season);
+  const teamGames = (await c.db.one("SELECT COUNT(*) AS n FROM games WHERE season = ? AND status = 'final'", season)).n;
+  const rows = await c.db.all(
     `SELECT b.member_id, m.name, COUNT(*) AS games, SUM(b.pa) AS pa, SUM(b.ab) AS ab, SUM(b.h) AS h, SUM(b.d2) AS d2, SUM(b.d3) AS d3,
             SUM(b.hr) AS hr, SUM(b.rbi) AS rbi, SUM(b.bb) AS bb, SUM(b.hbp) AS hbp, SUM(b.sf) AS sf, SUM(b.sb) AS sb
      FROM batting b JOIN games g ON g.id = b.game_id JOIN members m ON m.id = b.member_id
      WHERE g.season = ? AND g.status = 'final'
-     GROUP BY b.member_id`,
+     GROUP BY b.member_id, m.name`,
     season,
   );
   const withRates = rows.map((r) => ({ ...r, ...battingRates(r) }));
@@ -180,8 +179,8 @@ function helpMessage(c) {
   );
 }
 
-function attendanceMessage(c, event) {
-  const a = attendanceSummary(c, event.id);
+async function attendanceMessage(c, event) {
+  const a = await attendanceSummary(c, event.id);
   return flexMessage(
     `【出欠】${fmtDay(event.date)} ${event.title} 出席${a.yes} 未定${a.maybe} 欠席${a.no} 未回答${a.unanswered.length}`,
     listBubble({
@@ -200,8 +199,8 @@ function attendanceMessage(c, event) {
   );
 }
 
-function rankingMessage(c) {
-  const r = battingLeaders(c);
+async function rankingMessage(c) {
+  const r = await battingLeaders(c);
   const title = `${r.season}年 打撃ランキング`;
   if (!r.teamGames) {
     return flexMessage(title, simpleBubble({ label: "RANKING", title, body: "今季の確定した試合結果がまだありません。", url: appLink(c, "/stats") }));
@@ -236,11 +235,11 @@ function sourceOf(ev) {
 }
 
 async function recordGroup(c, src, { joined = true } = {}) {
-  const row = c.db.one("SELECT * FROM line_groups WHERE group_id = ?", src.id);
+  const row = await c.db.one("SELECT * FROM line_groups WHERE group_id = ?", src.id);
   if (row) {
-    c.db.run("UPDATE line_groups SET last_seen_at = ?, joined = ? WHERE group_id = ?", c.now.ts, joined ? 1 : 0, src.id);
+    await c.db.run("UPDATE line_groups SET last_seen_at = ?, joined = ? WHERE group_id = ?", c.now.ts, joined ? 1 : 0, src.id);
   } else {
-    c.db.run(
+    await c.db.run(
       "INSERT INTO line_groups(group_id, type, joined, first_seen_at, last_seen_at) VALUES(?, ?, ?, ?, ?)",
       src.id,
       src.type,
@@ -254,7 +253,7 @@ async function recordGroup(c, src, { joined = true } = {}) {
     try {
       const sum = await groupSummary(c.env, src.id);
       if (sum?.groupName) {
-        c.db.run("UPDATE line_groups SET name = ?, picture = ? WHERE group_id = ?", clip(sum.groupName, 100), sum.pictureUrl || null, src.id);
+        await c.db.run("UPDATE line_groups SET name = ?, picture = ? WHERE group_id = ?", clip(sum.groupName, 100), sum.pictureUrl || null, src.id);
       }
     } catch (err) {
       c.log.error?.("[line] group summary failed", err?.message);
@@ -296,16 +295,16 @@ async function handleCommand(c, ev, src) {
   } else if (cmd === "help") {
     messages = [helpMessage(c)];
   } else if (cmd === "ranking") {
-    messages = [rankingMessage(c)];
+    messages = [await rankingMessage(c)];
   } else {
-    const event = nextEvent(c);
+    const event = await nextEvent(c);
     if (!event) {
       messages = [{ type: "text", text: "予定はまだ登録されていません📅\nアプリの「日程」から追加できます。" }];
     } else if (cmd === "next") {
-      const a = attendanceSummary(c, event.id);
+      const a = await attendanceSummary(c, event.id);
       messages = [eventMessage(c, event, { label: "次の予定", attendance: a, buttonLabel: "出欠を回答する" })];
     } else {
-      messages = [attendanceMessage(c, event)];
+      messages = [await attendanceMessage(c, event)];
     }
   }
   const r = await reply(c.env, ev.replyToken, messages);
@@ -323,21 +322,24 @@ async function webhook(c) {
     const src = sourceOf(ev);
     if (!src) continue; // 1対1のトークなどは扱わない
     try {
-      if (ev.type === "leave") {
-        await recordGroup(c, src, { joined: false });
-        continue;
-      }
-      await recordGroup(c, src);
-      if (ev.type === "join") {
-        const cfg = lineConfig(c);
-        const text =
-          cfg.targetGroupId === src.id
-            ? "ただいま！このグループに通知をお届けします⚾"
-            : "招待ありがとうございます⚾\n管理者はアプリの「その他 → LINE通知」で、このグループを通知先に選んでください。\n予定・試合結果・リマインドが自動で届くようになります。";
-        await reply(c.env, ev.replyToken, [{ type: "text", text }]);
-      } else if (ev.type === "message" && ev.message?.type === "text") {
-        await handleCommand(c, ev, src);
-      }
+      // イベントごとに SAVEPOINT で区切り、1件の失敗で他のイベントの記録を巻き込まない
+      await c.db.savepoint(async () => {
+        if (ev.type === "leave") {
+          await recordGroup(c, src, { joined: false });
+          return;
+        }
+        await recordGroup(c, src);
+        if (ev.type === "join") {
+          const cfg = lineConfig(c);
+          const text =
+            cfg.targetGroupId === src.id
+              ? "ただいま！このグループに通知をお届けします⚾"
+              : "招待ありがとうございます⚾\n管理者はアプリの「その他 → LINE通知」で、このグループを通知先に選んでください。\n予定・試合結果・リマインドが自動で届くようになります。";
+          await reply(c.env, ev.replyToken, [{ type: "text", text }]);
+        } else if (ev.type === "message" && ev.message?.type === "text") {
+          await handleCommand(c, ev, src);
+        }
+      });
     } catch (err) {
       c.log.error?.("[line] webhook event failed", err?.message);
     }
@@ -346,11 +348,9 @@ async function webhook(c) {
 }
 
 // ---------------------------------------------------------------- 設定 API
-function status(c) {
+async function status(c) {
   const cfg = lineConfig(c);
-  const groups = c.db
-    .all("SELECT * FROM line_groups ORDER BY joined DESC, last_seen_at DESC")
-    .map((g) => ({ id: g.group_id, type: g.type, name: g.name || "", picture: g.picture || "", joined: !!g.joined, firstSeenAt: g.first_seen_at, lastSeenAt: g.last_seen_at }));
+  const groups = (await c.db.all("SELECT * FROM line_groups ORDER BY joined DESC, last_seen_at DESC")).map((g) => ({ id: g.group_id, type: g.type, name: g.name || "", picture: g.picture || "", joined: !!g.joined, firstSeenAt: g.first_seen_at, lastSeenAt: g.last_seen_at }));
   const target = groups.find((g) => g.id === cfg.targetGroupId) || null;
   const host = c.headers?.host || c.headers?.Host || "";
   return {
@@ -366,18 +366,18 @@ function status(c) {
     kinds: KINDS,
     webhookPath: "/api/line/webhook",
     webhookUrl: host ? `https://${host}/api/line/webhook` : null,
-    log: c.db.all("SELECT kind, title, ok, detail, at FROM line_log ORDER BY id DESC LIMIT 10").map((r) => ({ ...r, ok: !!r.ok })),
+    log: (await c.db.all("SELECT kind, title, ok, detail, at FROM line_log ORDER BY id DESC LIMIT 10")).map((r) => ({ ...r, ok: !!r.ok })),
   };
 }
 
-function updateSettings(c) {
+async function updateSettings(c) {
   const cur = lineConfig(c);
   const b = c.body || {};
   const next = { targetGroupId: cur.targetGroupId, notify: { ...cur.notify } };
   if (b.targetGroupId !== undefined) {
     if (b.targetGroupId === null || b.targetGroupId === "") next.targetGroupId = null;
     else {
-      const g = c.db.one("SELECT group_id FROM line_groups WHERE group_id = ?", String(b.targetGroupId));
+      const g = await c.db.one("SELECT group_id FROM line_groups WHERE group_id = ?", String(b.targetGroupId));
       if (!g) throw badRequest("そのグループは記録されていません。公式アカウントをグループに招待してください");
       next.targetGroupId = g.group_id;
     }
@@ -396,7 +396,7 @@ function updateSettings(c) {
       }
     }
   }
-  c.saveSettings({ line: next });
+  await c.saveSettings({ line: next });
   return status(c);
 }
 
@@ -417,7 +417,13 @@ async function sendTest(c) {
       }),
     ),
   ]);
-  if (!ok) throw new ApiError(502, "line_failed", "LINEへの送信に失敗しました。トークンと、公式アカウントがグループにいるかを確認してください");
+  if (!ok) {
+    // 例外にするとトランザクションごとロールバックされ送信履歴（失敗）が残らないので、エラー応答を返してコミットする
+    return raw(JSON.stringify({ error: "line_failed", message: "LINEへの送信に失敗しました。トークンと、公式アカウントがグループにいるかを確認してください" }), {
+      status: 502,
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    });
+  }
   return { ok: true };
 }
 
@@ -452,7 +458,7 @@ async function onEventUpdated(c, { event, before }) {
   if (!canSend(c, "eventChanged")) return;
   if (event.date && event.date < c.now.date) return;
   if (event.status !== "canceled" && before.status === "canceled") {
-    return send(c, "eventChanged", `再開: ${event.title}`, [eventMessage(c, event, { label: "中止から再開", accent: "#ffc83d" })]);
+    return void (await send(c, "eventChanged", `再開: ${event.title}`, [eventMessage(c, event, { label: "中止から再開", accent: "#ffc83d" })]));
   }
   if (event.status === "canceled") return;
   const changes = CHANGE_FIELDS.filter(([k]) => (before[k] || null) !== (event[k] || null)).map(([k, label, f]) => [label, before[k] ? f(before[k]) : "", event[k] ? f(event[k]) : ""]);
@@ -497,9 +503,9 @@ async function onPollDecided(c, { poll, event }) {
   );
 }
 
-function gameHighlights(c, game) {
+async function gameHighlights(c, game) {
   const out = [];
-  const rows = c.db.all(
+  const rows = await c.db.all(
     `SELECT b.*, m.name FROM batting b JOIN members m ON m.id = b.member_id WHERE b.game_id = ?
      ORDER BY b.hr DESC, b.h DESC, b.rbi DESC LIMIT 20`,
     game.id,
@@ -512,7 +518,7 @@ function gameHighlights(c, game) {
     if (parts.length) out.push(`${b.name} ${parts.join(" ")}`);
     if (out.length >= 3) break;
   }
-  const win = c.db.one("SELECT m.name FROM pitching p JOIN members m ON m.id = p.member_id WHERE p.game_id = ? AND p.decision = 'W'", game.id);
+  const win = await c.db.one("SELECT m.name FROM pitching p JOIN members m ON m.id = p.member_id WHERE p.game_id = ? AND p.decision = 'W' ORDER BY p.order_no NULLS FIRST, p.member_id LIMIT 1", game.id);
   if (win) out.push(`勝利投手 ${win.name}`);
   return out;
 }
@@ -522,15 +528,15 @@ async function onGameFinalized(c, { game }) {
   const us = Number(game.our_score ?? 0);
   const them = Number(game.their_score ?? 0);
   const res = us > them ? "勝利" : us < them ? "敗戦" : "引き分け";
-  await c.once(`line:game:${game.id}`, () =>
+  await c.once(`line:game:${game.id}`, async () =>
     send(c, "gameResult", `試合結果: vs ${game.opponent} ${us}-${them}`, [
       flexMessage(
         `【試合結果】vs ${game.opponent} ${us}-${them} で${res}${us > them ? "！" : ""}`,
         resultBubble(game, {
           teamName: c.settings.teamName,
           url: appLink(c, `/games/${game.id}`),
-          mvp: memberName(c, game.mvp_member_id),
-          highlights: gameHighlights(c, game),
+          mvp: await memberName(c, game.mvp_member_id),
+          highlights: await gameHighlights(c, game),
         }),
       ),
     ]),
@@ -592,9 +598,9 @@ async function onMemberJoined(c, { member }) {
 async function remindEve(c) {
   if (c.now.time < REMIND_TIME || !canSend(c, "remindEve")) return;
   const tomorrow = addDays(c.now.date, 1);
-  for (const event of c.db.all("SELECT * FROM events WHERE date = ? AND status = 'scheduled' ORDER BY meet_time, id", tomorrow)) {
-    await c.once(`line:eve:${event.id}:${event.date}`, () => {
-      const a = attendanceSummary(c, event.id);
+  for (const event of await c.db.all("SELECT * FROM events WHERE date = ? AND status = 'scheduled' ORDER BY meet_time NULLS FIRST, id", tomorrow)) {
+    await c.once(`line:eve:${event.id}:${event.date}`, async () => {
+      const a = await attendanceSummary(c, event.id);
       return send(c, "remindEve", `前日リマインド: ${event.title}`, [
         eventMessage(c, event, {
           label: `明日は${eventTypeLabel(event.type)}です！`,
@@ -610,16 +616,16 @@ async function remindEve(c) {
 
 async function wakeupCheck(c) {
   if (!canSend(c, "wakeup")) return;
-  if (!tableExists(c, "wakeups")) return; // community 機能がまだ無いときはスキップ
+  if (!(await tableExists(c, "wakeups"))) return; // community 機能がまだ無いときはスキップ
   // 集合が 0:00〜1:29 の予定は、90分前のチェックが前日になるので翌日の予定も見る
   const days = [c.now.date, addDays(c.now.date, 1)];
-  for (const event of c.db.all("SELECT * FROM events WHERE date IN (?, ?) AND status = 'scheduled'", ...days)) {
+  for (const event of await c.db.all("SELECT * FROM events WHERE date IN (?, ?) AND status = 'scheduled' ORDER BY date, id", ...days)) {
     const meet = event.meet_time || event.start_time;
     if (!meet) continue;
     const meetTs = toTs(event.date, meet);
     if (c.now.ts < meetTs - WAKE_BEFORE_MIN * 60000 || c.now.ts >= meetTs) continue;
     await c.once(`line:wake:${event.id}:${event.date}`, async () => {
-      const sleepers = c.db.all(
+      const sleepers = await c.db.all(
         `SELECT m.name FROM attendance a JOIN members m ON m.id = a.member_id
          WHERE a.event_id = ? AND a.status = 'yes' AND m.active = 1
            AND NOT EXISTS (SELECT 1 FROM wakeups w WHERE w.event_id = a.event_id AND w.member_id = a.member_id)
@@ -650,14 +656,14 @@ async function wakeupCheck(c) {
 async function rsvpDeadlineRemind(c) {
   if (c.now.time < REMIND_TIME || !canSend(c, "rsvpDeadline")) return;
   const tomorrow = addDays(c.now.date, 1);
-  const events = c.db.all(
+  const events = await c.db.all(
     "SELECT * FROM events WHERE rsvp_deadline = ? AND status = 'scheduled' AND date >= ? ORDER BY date, id",
     tomorrow,
     c.now.date,
   );
   for (const event of events) {
     await c.once(`line:deadline:${event.id}:${event.rsvp_deadline}`, async () => {
-      const a = attendanceSummary(c, event.id);
+      const a = await attendanceSummary(c, event.id);
       if (!a.unanswered.length) return;
       await send(c, "rsvpDeadline", `出欠締切: ${event.title}`, [
         flexMessage(
@@ -681,13 +687,13 @@ async function rsvpDeadlineRemind(c) {
 async function statsInputRemind(c) {
   if (c.now.time < REMIND_TIME || !canSend(c, "statsInput")) return;
   const yesterday = addDays(c.now.date, -1);
-  for (const game of c.db.all("SELECT * FROM games WHERE date = ? AND status = 'draft' ORDER BY id", yesterday)) {
+  for (const game of await c.db.all("SELECT * FROM games WHERE date = ? AND status = 'draft' ORDER BY id", yesterday)) {
     await c.once(`line:stats:${game.id}`, async () => {
-      const rows = c.db.all(
+      const rows = await c.db.all(
         `SELECT m.name FROM batting b JOIN members m ON m.id = b.member_id
          WHERE b.game_id = ? AND b.pa = 0 AND m.active = 1 AND COALESCE(b.position, '') != '控え'
            AND NOT EXISTS (SELECT 1 FROM pitching p WHERE p.game_id = b.game_id AND p.member_id = b.member_id)
-         ORDER BY b.order_no, m.id`,
+         ORDER BY b.order_no NULLS FIRST, m.id`,
         game.id,
       );
       if (!rows.length) return;
@@ -760,7 +766,7 @@ CREATE TABLE IF NOT EXISTS line_log (
     if (!hasToken(c.env) || !lineConfig(c).targetGroupId) return;
     for (const job of [remindEve, wakeupCheck, rsvpDeadlineRemind, statsInputRemind]) {
       try {
-        await job(c);
+        await c.db.savepoint(() => job(c));
       } catch (err) {
         c.log.error?.(`[line] cron ${job.name} failed`, err?.message);
       }

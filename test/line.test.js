@@ -70,13 +70,13 @@ async function setup({ env = ENV, now = "2026-10-11T12:00", target = true } = {}
   return { t, admin };
 }
 
-function addEvent(t, e) {
+async function addEvent(t, e) {
   const row = { type: "game", title: "練習試合", status: "scheduled", created_at: 0, updated_at: 0, ...e };
   const keys = Object.keys(row);
-  const { lastId } = t.db.run(`INSERT INTO events(${keys.join(",")}) VALUES(${keys.map(() => "?").join(",")})`, ...keys.map((k) => row[k]));
+  const { lastId } = await t.db.run(`INSERT INTO events(${keys.join(",")}) VALUES(${keys.map(() => "?").join(",")})`, ...keys.map((k) => row[k]));
   return t.db.one("SELECT * FROM events WHERE id = ?", lastId);
 }
-const rsvp = (t, eventId, memberId, status) =>
+const rsvp = async (t, eventId, memberId, status) =>
   t.db.run("INSERT INTO attendance(event_id, member_id, status, updated_at) VALUES(?, ?, ?, 0)", eventId, memberId, status);
 const emit = (t, name, payload) => t.anon.post("/_emit", { name, payload });
 
@@ -93,7 +93,7 @@ test("署名検証: 正しい署名は通り、誤りは 401、シークレッ�
   const r = await hook(none, [{ type: "join", replyToken: "x", source: groupSrc() }], { signature: "anything" });
   assert.equal(r.status, 200);
   assert.equal(r.body.ignored, true);
-  assert.equal(none.db.all("SELECT * FROM line_groups").length, 0);
+  assert.equal((await none.db.all("SELECT * FROM line_groups")).length, 0);
   assert.equal(calls.length, 0);
 
   assert.equal(await verifySignature(SECRET, "abc", sign("abc")), true);
@@ -106,7 +106,7 @@ test("join でグループを記録し、グループ名を取得してあいさ
   const admin = await t.join("監督");
   const r = await hook(t, [{ type: "join", replyToken: "rt-1", source: groupSrc() }]);
   assert.equal(r.status, 200);
-  const g = t.db.one("SELECT * FROM line_groups WHERE group_id = ?", GROUP);
+  const g = await t.db.one("SELECT * FROM line_groups WHERE group_id = ?", GROUP);
   assert.equal(g.name, "常磐ナイン連絡");
   assert.equal(g.joined, 1);
   const summary = calls.find((c) => c.url.includes(`/group/${GROUP}/summary`));
@@ -118,13 +118,13 @@ test("join でグループを記録し、グループ名を取得してあいさ
   // メッセージでも最終確認日時を更新・退出で joined=0
   t.setNow("2026-10-12T09:00");
   await hook(t, [textEv("こんにちは")]);
-  assert.ok(t.db.one("SELECT last_seen_at FROM line_groups").last_seen_at > g.last_seen_at);
+  assert.ok((await t.db.one("SELECT last_seen_at FROM line_groups")).last_seen_at > g.last_seen_at);
   await hook(t, [{ type: "leave", source: groupSrc() }]);
   const st = await admin.get("/line/status");
   assert.equal(st.body.groups[0].joined, false);
   // 1対1のトークは記録しない
   await hook(t, [{ type: "follow", replyToken: "x", source: { type: "user", userId: "U1" } }]);
-  assert.equal(t.db.all("SELECT * FROM line_groups").length, 1);
+  assert.equal((await t.db.all("SELECT * FROM line_groups")).length, 1);
 });
 
 // ---------------------------------------------------------------- コマンド
@@ -132,9 +132,9 @@ test("コマンド: 次の予定・出欠・ランキング・ヘルプに返信
   const { t } = await setup();
   const taro = await t.join("太郎");
   await t.join("次郎");
-  const ev = addEvent(t, { title: "秋季リーグ", opponent: "川口ベアーズ", date: "2026-10-18", meet_time: "07:30", venue: "荒川河川敷A面", belongings: "ユニフォーム" });
-  addEvent(t, { title: "過去の試合", date: "2026-10-01" });
-  rsvp(t, ev.id, taro.member.id, "yes");
+  const ev = await addEvent(t, { title: "秋季リーグ", opponent: "川口ベアーズ", date: "2026-10-18", meet_time: "07:30", venue: "荒川河川敷A面", belongings: "ユニフォーム" });
+  await addEvent(t, { title: "過去の試合", date: "2026-10-01" });
+  await rsvp(t, ev.id, taro.member.id, "yes");
   calls = [];
 
   await hook(t, [textEv("こんにちは"), textEv("次の予定はいつ？だれか教えて")]);
@@ -156,8 +156,8 @@ test("コマンド: 次の予定・出欠・ランキング・ヘルプに返信
   assert.match(rep, /監督、次郎/); // 未回答者
 
   // ランキング（確定した試合のみ集計）
-  const { lastId: gid } = t.db.run("INSERT INTO games(season, date, opponent, status, our_score, their_score, created_at, updated_at) VALUES(2026, '2026-10-04', 'A', 'final', 5, 3, 0, 0)");
-  t.db.run("INSERT INTO batting(game_id, member_id, pa, ab, h, hr, rbi, updated_at) VALUES(?, ?, 4, 4, 3, 1, 3, 0)", gid, taro.member.id);
+  const { lastId: gid } = await t.db.run("INSERT INTO games(season, date, opponent, status, our_score, their_score, created_at, updated_at) VALUES(2026, '2026-10-04', 'A', 'final', 5, 3, 0, 0)");
+  await t.db.run("INSERT INTO batting(game_id, member_id, pa, ab, h, hr, rbi, updated_at) VALUES(?, ?, 4, 4, 3, 1, 3, 0)", gid, taro.member.id);
   await hook(t, [textEv("ランキング")]);
   rep = json(replies().at(-1).body.messages);
   assert.match(rep, /打撃ランキング/);
@@ -176,7 +176,7 @@ test("コマンド: 次の予定・出欠・ランキング・ヘルプに返信
 
 test("通知先以外のグループではチームの情報を返さない（ヘルプのみ案内）", async () => {
   const { t } = await setup();
-  addEvent(t, { title: "秋季リーグ", date: "2026-10-18" });
+  await addEvent(t, { title: "秋季リーグ", date: "2026-10-18" });
   const other = "Cother000000000000000000000000002";
   await hook(t, [textEv("次の予定", other), textEv("出欠", other)]);
   assert.equal(replies().length, 0);
@@ -243,11 +243,11 @@ test("トークン未設定なら通知もコマンド返信も fetch しない"
   const t = makeTeam({ features: FEATURES, env });
   const admin = await t.join("監督");
   await hook(t, [{ type: "join", replyToken: "rt", source: groupSrc() }]);
-  assert.equal(t.db.all("SELECT * FROM line_groups").length, 1); // 記録はする
+  assert.equal((await t.db.all("SELECT * FROM line_groups")).length, 1); // 記録はする
   await admin.patch("/line/settings", { targetGroupId: GROUP });
   await hook(t, [textEv("次の予定")]);
   await t.join("太郎");
-  await emit(t, "event.created", { event: addEvent(t, { title: "練習", date: "2026-10-18" }) });
+  await emit(t, "event.created", { event: await addEvent(t, { title: "練習", date: "2026-10-18" }) });
   t.setNow("2026-10-17T20:00");
   await t.cron();
   assert.equal(calls.length, 0);
@@ -265,7 +265,7 @@ test("トークン未設定なら通知もコマンド返信も fetch しない"
 // ---------------------------------------------------------------- イベント購読
 test("イベント購読: 予定の追加・変更・中止・新メンバーを push、オフの種類は送らない", async () => {
   const { t, admin } = await setup();
-  const ev = addEvent(t, { title: "練習試合", opponent: "荒川クラブ", date: "2026-10-18", meet_time: "08:00", venue: "荒川A面" });
+  const ev = await addEvent(t, { title: "練習試合", opponent: "荒川クラブ", date: "2026-10-18", meet_time: "08:00", venue: "荒川A面" });
 
   await emit(t, "event.created", { event: ev });
   assert.equal(pushes().length, 1);
@@ -318,18 +318,18 @@ test("イベント購読: 日程調整・試合結果（スコアボード）・
   assert.match(json(pushes()[0].body), /11\/1\(日\)/);
   assert.match(json(pushes()[0].body), /#\/polls\/3/);
 
-  const ev = addEvent(t, { title: "練習試合", date: "2026-11-08" });
+  const ev = await addEvent(t, { title: "練習試合", date: "2026-11-08" });
   await emit(t, "poll.decided", { poll: { id: 3, title: "11月の練習試合" }, event: ev });
   assert.equal(pushes().length, 2);
   assert.match(json(pushes()[1].body), /日程が決まりました/);
 
-  const { lastId } = t.db.run(
+  const { lastId } = await t.db.run(
     `INSERT INTO games(season, date, opponent, venue, innings, bat_first, our_score, their_score, line_us, line_them, status, mvp_member_id, created_at, updated_at)
      VALUES(2026, '2026-10-11', '川口ベアーズ', '荒川A面', 7, 1, 6, 4, '[1,0,2,0,3,0,0]', '[0,0,1,0,0,3,0]', 'final', ?, 0, 0)`,
     taro.member.id,
   );
-  t.db.run("INSERT INTO batting(game_id, member_id, pa, ab, h, hr, rbi, updated_at) VALUES(?, ?, 4, 4, 3, 1, 4, 0)", lastId, taro.member.id);
-  const game = t.db.one("SELECT * FROM games WHERE id = ?", lastId);
+  await t.db.run("INSERT INTO batting(game_id, member_id, pa, ab, h, hr, rbi, updated_at) VALUES(?, ?, 4, 4, 3, 1, 4, 0)", lastId, taro.member.id);
+  const game = await t.db.one("SELECT * FROM games WHERE id = ?", lastId);
   await emit(t, "game.finalized", { game });
   await emit(t, "game.finalized", { game }); // 二重には送らない
   assert.equal(pushes().length, 3);
@@ -362,10 +362,10 @@ test("cron 前日リマインド: 前日20:00以降の最初の実行で1回だ�
   const taro = await t.join("太郎");
   await t.join("次郎");
   const hanako = await t.join("花子");
-  const ev = addEvent(t, { title: "秋季リーグ", date: "2026-10-18", meet_time: "07:30", venue: "荒川A面", belongings: "白ユニ・スパイク" });
-  addEvent(t, { title: "中止の予定", date: "2026-10-18", status: "canceled" });
-  rsvp(t, ev.id, taro.member.id, "yes");
-  rsvp(t, ev.id, hanako.member.id, "no");
+  const ev = await addEvent(t, { title: "秋季リーグ", date: "2026-10-18", meet_time: "07:30", venue: "荒川A面", belongings: "白ユニ・スパイク" });
+  await addEvent(t, { title: "中止の予定", date: "2026-10-18", status: "canceled" });
+  await rsvp(t, ev.id, taro.member.id, "yes");
+  await rsvp(t, ev.id, hanako.member.id, "no");
   calls = [];
 
   t.setNow("2026-10-17T19:45");
@@ -389,7 +389,7 @@ test("cron 前日リマインド: 前日20:00以降の最初の実行で1回だ�
 
   // オフなら送らない
   await admin.patch("/line/settings", { notify: { remindEve: false } });
-  addEvent(t, { title: "練習", type: "practice", date: "2026-10-19" });
+  await addEvent(t, { title: "練習", type: "practice", date: "2026-10-19" });
   t.setNow("2026-10-18T21:00");
   await t.cron();
   assert.equal(pushes().length, 0 + 1);
@@ -400,20 +400,20 @@ test("cron 起床チェック: 集合90分前以降に、出席なのに起床�
   const taro = await t.join("太郎");
   const jiro = await t.join("次郎");
   const hanako = await t.join("花子");
-  const ev = addEvent(t, { title: "秋季リーグ", date: "2026-10-18", meet_time: "07:30" });
-  rsvp(t, ev.id, taro.member.id, "yes");
-  rsvp(t, ev.id, jiro.member.id, "yes");
-  rsvp(t, ev.id, hanako.member.id, "no");
+  const ev = await addEvent(t, { title: "秋季リーグ", date: "2026-10-18", meet_time: "07:30" });
+  await rsvp(t, ev.id, taro.member.id, "yes");
+  await rsvp(t, ev.id, jiro.member.id, "yes");
+  await rsvp(t, ev.id, hanako.member.id, "no");
   calls = [];
 
   // wakeups テーブルが無い（community 未実装）→ 何もしない
   t.setNow("2026-10-18T06:00");
   await t.cron();
   assert.equal(pushes().length, 0);
-  assert.equal(t.db.one("SELECT COUNT(*) AS n FROM sent_log WHERE key LIKE 'line:wake:%'").n, 0);
+  assert.equal((await t.db.one("SELECT COUNT(*) AS n FROM sent_log WHERE key LIKE 'line:wake:%'")).n, 0);
 
-  t.db.exec("CREATE TABLE wakeups (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER, member_id INTEGER, at INTEGER, comment TEXT)");
-  t.db.run("INSERT INTO wakeups(event_id, member_id, at) VALUES(?, ?, 0)", ev.id, taro.member.id);
+  await t.db.exec("CREATE TABLE wakeups (id BIGSERIAL PRIMARY KEY, event_id BIGINT, member_id BIGINT, at BIGINT, comment TEXT)");
+  await t.db.run("INSERT INTO wakeups(event_id, member_id, at) VALUES(?, ?, 0)", ev.id, taro.member.id);
 
   t.setNow("2026-10-18T05:45"); // 105分前
   await t.cron();
@@ -434,12 +434,12 @@ test("cron 出欠締切リマインド: 締切前日20:00に未回答者・全�
   const { t } = await setup({ now: "2026-10-14T12:00" });
   const taro = await t.join("太郎");
   const jiro = await t.join("次郎");
-  t.db.run("UPDATE members SET is_guest = 1 WHERE id = ?", jiro.member.id); // 助っ人は対象外
-  const ev = addEvent(t, { title: "秋季リーグ", date: "2026-10-25", rsvp_deadline: "2026-10-15" });
-  const done = addEvent(t, { title: "全員回答済み", date: "2026-10-26", rsvp_deadline: "2026-10-15" });
-  rsvp(t, ev.id, taro.member.id, "yes");
-  rsvp(t, done.id, taro.member.id, "yes");
-  rsvp(t, done.id, (await t.db.one("SELECT id FROM members WHERE name = '監督'")).id, "no");
+  await t.db.run("UPDATE members SET is_guest = 1 WHERE id = ?", jiro.member.id); // 助っ人は対象外
+  const ev = await addEvent(t, { title: "秋季リーグ", date: "2026-10-25", rsvp_deadline: "2026-10-15" });
+  const done = await addEvent(t, { title: "全員回答済み", date: "2026-10-26", rsvp_deadline: "2026-10-15" });
+  await rsvp(t, ev.id, taro.member.id, "yes");
+  await rsvp(t, done.id, taro.member.id, "yes");
+  await rsvp(t, done.id, (await t.db.one("SELECT id FROM members WHERE name = '監督'")).id, "no");
   calls = [];
 
   t.setNow("2026-10-14T19:59");
@@ -459,13 +459,13 @@ test("cron 成績入力リマインド: 試合翌日20:00に打席0の出場者�
   const { t } = await setup({ now: "2026-10-12T12:00" });
   const taro = await t.join("太郎");
   const jiro = await t.join("次郎");
-  const ins = (status) =>
-    t.db.run("INSERT INTO games(season, date, opponent, status, created_at, updated_at) VALUES(2026, '2026-10-11', '川口', ?, 0, 0)", status).lastId;
-  const draft = ins("draft");
-  const final = ins("final");
-  t.db.run("INSERT INTO batting(game_id, member_id, pa, ab, h, updated_at) VALUES(?, ?, 4, 3, 1, 0)", draft, taro.member.id);
-  t.db.run("INSERT INTO batting(game_id, member_id, pa, updated_at) VALUES(?, ?, 0, 0)", draft, jiro.member.id);
-  t.db.run("INSERT INTO batting(game_id, member_id, pa, updated_at) VALUES(?, ?, 0, 0)", final, taro.member.id);
+  const ins = async (status) =>
+    (await t.db.run("INSERT INTO games(season, date, opponent, status, created_at, updated_at) VALUES(2026, '2026-10-11', '川口', ?, 0, 0)", status)).lastId;
+  const draft = await ins("draft");
+  const final = await ins("final");
+  await t.db.run("INSERT INTO batting(game_id, member_id, pa, ab, h, updated_at) VALUES(?, ?, 4, 3, 1, 0)", draft, taro.member.id);
+  await t.db.run("INSERT INTO batting(game_id, member_id, pa, updated_at) VALUES(?, ?, 0, 0)", draft, jiro.member.id);
+  await t.db.run("INSERT INTO batting(game_id, member_id, pa, updated_at) VALUES(?, ?, 0, 0)", final, taro.member.id);
   calls = [];
 
   await t.cron();
@@ -484,11 +484,11 @@ test("cron 成績入力リマインド: 試合翌日20:00に打席0の出場者�
 
 test("通知先が未設定なら cron もイベントも送らない", async () => {
   const { t } = await setup({ target: false, now: "2026-10-17T20:00" });
-  addEvent(t, { title: "秋季リーグ", date: "2026-10-18" });
+  await addEvent(t, { title: "秋季リーグ", date: "2026-10-18" });
   await t.cron();
-  await emit(t, "event.created", { event: addEvent(t, { title: "練習", date: "2026-10-20" }) });
+  await emit(t, "event.created", { event: await addEvent(t, { title: "練習", date: "2026-10-20" }) });
   assert.equal(calls.length, 0);
-  assert.equal(t.db.one("SELECT COUNT(*) AS n FROM sent_log WHERE key LIKE 'line:%'").n, 0);
+  assert.equal((await t.db.one("SELECT COUNT(*) AS n FROM sent_log WHERE key LIKE 'line:%'")).n, 0);
 });
 
 // ---------------------------------------------------------------- flex
