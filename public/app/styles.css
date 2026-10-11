@@ -442,3 +442,6 @@ button.list-item { width: 100%; text-align: left; border: 0; background: transpa
 .chip-title { background: rgba(255, 255, 255, 0.08); color: var(--chalk); }
 .list-item .chip { flex: none; }
 .chip-role { margin-left: 6px; vertical-align: 2px; font-size: 11px; padding: 1px 7px; }
+
+/* 右下の作成ボタン（FAB）が最後の行に重ならないよう余白を足す */
+.page:has(> .fab) { padding-bottom: 96px; }

@@ -65,7 +65,7 @@ function liveRow(l) {
 async function renderList(view, { query }) {
   const range = query.range === "past" ? "past" : "upcoming";
   setHeader({ title: "お笑いライブ", back: "/more" });
-  const { lives } = await get(`/lives?range=${range}`);
+  const { lives, canPost } = await get(`/lives?range=${range}`);
   mount(
     view,
     html`<section class="card lv-hero">
@@ -77,11 +77,13 @@ async function renderList(view, { query }) {
       ${lives.length
         ? html`<div class="list">${lives.map(liveRow)}</div>`
         : empty(range === "past" ? "過去のライブはまだありません" : "予定されているライブはまだありません", { icon: "🎙" })}
-      ${fab({ label: "ライブを登録", short: "登録", act: "new" })}`,
+      ${isAdmin() ? html`<button class="btn btn-ghost btn-block btn-sm" data-act="posters">🎙 ライブ情報を登録できる人を設定</button>` : ""}
+      ${canPost ? fab({ label: "ライブを登録", short: "登録", act: "new" }) : ""}`,
   );
   const offs = [
     on(view, "click", "[data-segmented=range] button", (_, b) => navigate(b.dataset.value === "past" ? "/lives?range=past" : "/lives")),
     on(view, "click", "[data-act=new]", () => openForm(null)),
+    on(view, "click", "[data-act=posters]", () => openPosters()),
   ];
   return () => offs.forEach((f) => f());
 }
@@ -338,6 +340,44 @@ function openForm(l, onSaved) {
             navigate(`/lives/${live.id}`);
           }
         });
+      });
+    },
+  });
+}
+
+// ---------------------------------------------------------------- 登録できる人（管理者）
+async function openPosters() {
+  let members;
+  try {
+    ({ members } = await get("/lives/posters"));
+  } catch (err) {
+    return toastError(err);
+  }
+  sheet({
+    title: "ライブ情報を登録できる人",
+    body: html`<p class="hint">アミダライン（和氣・山口）と管理者は最初から登録・編集できます</p>
+      <div class="list lv-posters">
+        ${members.map(
+          (m) => html`<label class="list-item">
+            ${avatar(m, "sm")}
+            <span class="list-main list-title">${m.name}</span>
+            ${m.role === "admin"
+              ? html`<span class="chip chip-amber">管理者</span>`
+              : m.byName
+                ? html`<span class="chip chip-purple">アミダライン</span>`
+                : html`<input type="checkbox" class="lv-check" data-id="${m.id}" ${m.canPostLives ? "checked" : ""} aria-label="${m.name}に許可" />`}
+          </label>`,
+        )}
+      </div>`,
+    onMount(el) {
+      on(el, "change", ".lv-check", async (_, cb) => {
+        try {
+          await put(`/lives/posters/${cb.dataset.id}`, { allowed: cb.checked });
+          toast(cb.checked ? "登録できるようにしました" : "登録できないようにしました", { type: "success" });
+        } catch (err) {
+          cb.checked = !cb.checked;
+          toastError(err);
+        }
       });
     },
   });

@@ -5,6 +5,12 @@ import { publicMember } from "./members.js";
 
 const STATUSES = ["go", "maybe", "no"]; // 行く / 迷い中 / 行けない
 
+// アミダライン（和氣・山口）は最初からライブ情報を登録・編集できる。ほかの人は管理者が個別に許可する
+const PERFORMER_NAMES = ["和氣達朗", "山口陽常"];
+const norm = (s) => String(s || "").replace(/[\s\u3000]/g, "");
+export const canPostLives = (m) =>
+  !!m && (m.role === "admin" || Number(m.live_poster) === 1 || PERFORMER_NAMES.includes(norm(m.name)));
+
 async function getLive(db, id) {
   const row = await db.one("SELECT * FROM lives WHERE id = ?", Number(id));
   if (!row) throw notFound("ライブが見つかりません");
@@ -68,7 +74,7 @@ async function liveView(db, row, me) {
     note: row.note || "",
     status: row.status,
     createdBy: row.created_by,
-    canEdit: !!me && (me.role === "admin" || me.id === row.created_by),
+    canEdit: canPostLives(me),
     counts: {
       go: go.length,
       maybe: list.filter((x) => x.status === "maybe").length,
@@ -123,6 +129,30 @@ CREATE TABLE IF NOT EXISTS live_rsvps (
 );
 `,
     },
+    {
+      // ライブ情報を登録・編集できるメンバー（芸人本人など）。管理者は常に可
+      id: "lives-002",
+      sql: `ALTER TABLE members ADD COLUMN IF NOT EXISTS live_poster BIGINT NOT NULL DEFAULT 0;`,
+    },
+    {
+      // 2026年10月の公開済みスケジュール（アミダライン「10月のアミダ」より）
+      id: "lives-003",
+      sql: `
+INSERT INTO lives(title, performer, date, start_time, venue, venue_url, note, created_at, updated_at)
+SELECT v.title, 'アミダライン', v.date, v.start_time, v.venue, v.venue_url, v.note, 0, 0
+FROM (VALUES
+  ('炙りカルビ', '2026-10-02', '20:00', '池袋ムーブメントスタジオ', 'https://www.google.com/maps/search/?api=1&query=%E6%B1%A0%E8%A2%8B%20%E3%83%A0%E3%83%BC%E3%83%96%E3%83%A1%E3%83%B3%E3%83%88%E3%82%B9%E3%82%BF%E3%82%B8%E3%82%AA', NULL),
+  ('アガり！ステージ2部', '2026-10-05', '19:30', '新宿Sparkle', 'https://www.google.com/maps/search/?api=1&query=%E6%96%B0%E5%AE%BF%20Sparkle', NULL),
+  ('若手ネタバトルライブ エレクトロアルファ', '2026-10-07', '20:00', '銀座アートボックス', 'https://www.google.com/maps/search/?api=1&query=%E9%8A%80%E5%BA%A7%E3%82%A2%E3%83%BC%E3%83%88%E3%83%9C%E3%83%83%E3%82%AF%E3%82%B9', NULL),
+  ('フェ肉ス', '2026-10-13', '14:30', '池袋あうるすぽっと', 'https://www.google.com/maps/search/?api=1&query=%E3%81%82%E3%81%86%E3%82%8B%E3%81%99%E3%81%BD%E3%81%A3%E3%81%A8%20%E8%B1%8A%E5%B3%B6%E5%8C%BA%E7%AB%8B%E8%88%9E%E5%8F%B0%E8%8A%B8%E8%A1%93%E4%BA%A4%E6%B5%81%E3%82%BB%E3%83%B3%E3%82%BF%E3%83%BC', '29期の同期ライブ'),
+  ('M-1グランプリ二回戦', '2026-10-15', NULL, '浅草雷5656会館', 'https://www.google.com/maps/search/?api=1&query=%E6%B5%85%E8%8D%89%E9%9B%B75656%E4%BC%9A%E9%A4%A8', '開演時間は未定'),
+  ('渋谷神保町ファーストステージ', '2026-10-19', '18:30', '新宿レフカダ', 'https://www.google.com/maps/search/?api=1&query=%E6%96%B0%E5%AE%BF%E3%83%AC%E3%83%95%E3%82%AB%E3%83%80', NULL),
+  ('3時間ぶっ通し！超青田買いコントライブ！', '2026-10-24', '12:00', 'よしもと六本木シアター', 'https://www.google.com/maps/search/?api=1&query=%E3%82%88%E3%81%97%E3%82%82%E3%81%A8%E5%85%AD%E6%9C%AC%E6%9C%A8%E3%82%B7%E3%82%A2%E3%82%BF%E3%83%BC', NULL),
+  ('ラヴ・ラヴィ・コントVol.2', '2026-11-01', '13:00', '中野Vスタジオ', 'https://www.google.com/maps/search/?api=1&query=%E4%B8%AD%E9%87%8E%20V%E3%82%B9%E3%82%BF%E3%82%B8%E3%82%AA', NULL)
+) AS v(title, date, start_time, venue, venue_url, note)
+WHERE NOT EXISTS (SELECT 1 FROM lives l WHERE l.date = v.date AND l.title = v.title);
+`,
+    },
   ],
   routes: [
     [
@@ -138,14 +168,19 @@ CREATE TABLE IF NOT EXISTS live_rsvps (
         );
         const lives = [];
         for (const r of rows) lives.push(await liveView(c.db, r, c.member));
-        return { lives };
+        return { lives, canPost: canPostLives(c.member) };
       },
     ],
+    ["GET", "/lives/posters", async (c) => {
+      const rows = await c.db.all("SELECT * FROM members WHERE active = 1 ORDER BY id");
+      return { members: rows.map((m) => ({ ...publicMember(m), canPostLives: canPostLives(m), byName: PERFORMER_NAMES.includes(norm(m.name)) })) };
+    }, { auth: "admin" }],
     ["GET", "/lives/:id", async (c) => ({ live: await liveView(c.db, await getLive(c.db, c.params.id), c.member) })],
     [
       "POST",
       "/lives",
       async (c) => {
+        if (!canPostLives(c.member)) throw forbidden("ライブ情報を登録できるのはアミダラインと管理者です");
         const f = liveFields(c.body);
         const { lastId } = await c.db.run(
           `INSERT INTO lives(title, performer, date, open_time, start_time, end_time, venue, venue_url,
@@ -164,7 +199,7 @@ CREATE TABLE IF NOT EXISTS live_rsvps (
       "/lives/:id",
       async (c) => {
         const row = await getLive(c.db, c.params.id);
-        if (!c.isAdmin && row.created_by !== c.member.id) throw forbidden("登録した人か管理者だけが編集できます");
+        if (!canPostLives(c.member)) throw forbidden("ライブ情報を編集できるのはアミダラインと管理者です");
         const f = liveFields(c.body, { partial: true });
         if (c.body.status !== undefined) f.status = v.oneOf(c.body.status, "状態", ["scheduled", "canceled"], { required: true });
         const keys = Object.keys(f);
@@ -184,11 +219,23 @@ CREATE TABLE IF NOT EXISTS live_rsvps (
       "/lives/:id",
       async (c) => {
         const row = await getLive(c.db, c.params.id);
-        if (!c.isAdmin && row.created_by !== c.member.id) throw forbidden("登録した人か管理者だけが削除できます");
+        if (!canPostLives(c.member)) throw forbidden("ライブ情報を削除できるのはアミダラインと管理者です");
         await c.db.run("DELETE FROM live_rsvps WHERE live_id = ?", row.id);
         await c.db.run("DELETE FROM lives WHERE id = ?", row.id);
         return { ok: true };
       },
+    ],
+    // ライブ情報の登録権限を付け外し（管理者）
+    [
+      "PUT",
+      "/lives/posters/:memberId",
+      async (c) => {
+        const id = v.int(c.params.memberId, "メンバー", { min: 1, max: 1e12, required: true });
+        if (!(await c.db.one("SELECT id FROM members WHERE id = ?", id))) throw notFound("メンバーが見つかりません");
+        await c.db.run("UPDATE members SET live_poster = ? WHERE id = ?", c.body.allowed ? 1 : 0, id);
+        return { ok: true };
+      },
+      { auth: "admin" },
     ],
     // 参加意思（本人。管理者は member_id 指定で代理入力）
     [

@@ -60,3 +60,5 @@
 .lv-home { border-color: rgba(167, 139, 250, 0.35); background: linear-gradient(160deg, #241d52, var(--card)); }
 .lv-home .card-head { margin-bottom: 8px; }
 .lv-home-foot { margin-top: 6px; }
+.lv-check { width: 22px; height: 22px; accent-color: var(--purple); }
+.lv-posters { max-height: 60vh; overflow-y: auto; }
