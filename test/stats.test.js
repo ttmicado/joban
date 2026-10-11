@@ -3,23 +3,23 @@ import test from "node:test";
 import { makeTeam } from "./helpers/team.js";
 
 // games / batting / pitching へ直接書き込むヘルパー
-function addGame(t, { season = 2026, date = "2026-05-01", status = "final", our = 5, their = 3, opponent = "川口ファイターズ" } = {}) {
-  return t.db.run(
+async function addGame(t, { season = 2026, date = "2026-05-01", status = "final", our = 5, their = 3, opponent = "川口ファイターズ" } = {}) {
+  return (await t.db.run(
     `INSERT INTO games(season, date, opponent, our_score, their_score, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, 0, 0)`,
     season, date, opponent, our, their, status,
-  ).lastId;
+  )).lastId;
 }
-function bat(t, gameId, memberId, s) {
+async function bat(t, gameId, memberId, s) {
   const r = { pa: 0, ab: 0, h: 0, d2: 0, d3: 0, hr: 0, rbi: 0, r: 0, so: 0, bb: 0, hbp: 0, sh: 0, sf: 0, sb: 0, ...s };
-  t.db.run(
+  await t.db.run(
     `INSERT INTO batting(game_id, member_id, pa, ab, h, d2, d3, hr, rbi, r, so, bb, hbp, sh, sf, sb, updated_at)
      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     gameId, memberId, r.pa, r.ab, r.h, r.d2, r.d3, r.hr, r.rbi, r.r, r.so, r.bb, r.hbp, r.sh, r.sf, r.sb,
   );
 }
-function pit(t, gameId, memberId, s) {
+async function pit(t, gameId, memberId, s) {
   const r = { outs: 0, h: 0, so: 0, bb: 0, r: 0, er: 0, decision: null, ...s };
-  t.db.run(
+  await t.db.run(
     `INSERT INTO pitching(game_id, member_id, outs, h, so, bb, r, er, decision, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     gameId, memberId, r.outs, r.h, r.so, r.bb, r.r, r.er, r.decision,
   );
@@ -36,14 +36,14 @@ async function setup() {
 
 test("draft の試合は集計に含めない・規定打席の判定", async () => {
   const { t, admin, taro, jiro } = await setup();
-  const g1 = addGame(t, { date: "2026-05-01" });
-  const g2 = addGame(t, { date: "2026-05-08", our: 1, their: 4 });
-  const d = addGame(t, { date: "2026-05-15", status: "draft" });
+  const g1 = await addGame(t, { date: "2026-05-01" });
+  const g2 = await addGame(t, { date: "2026-05-08", our: 1, their: 4 });
+  const d = await addGame(t, { date: "2026-05-15", status: "draft" });
   // 規定打席 = 2試合 × 2 = 4
-  bat(t, g1, taro.member.id, { pa: 3, ab: 3, h: 2 });
-  bat(t, g2, taro.member.id, { pa: 1, ab: 1, h: 0 });
-  bat(t, g1, jiro.member.id, { pa: 3, ab: 3, h: 3 });
-  bat(t, d, taro.member.id, { pa: 5, ab: 5, h: 5, hr: 5 });
+  await bat(t, g1, taro.member.id, { pa: 3, ab: 3, h: 2 });
+  await bat(t, g2, taro.member.id, { pa: 1, ab: 1, h: 0 });
+  await bat(t, g1, jiro.member.id, { pa: 3, ab: 3, h: 3 });
+  await bat(t, d, taro.member.id, { pa: 5, ab: 5, h: 5, hr: 5 });
 
   const res = await admin.get("/stats/batting?season=2026");
   assert.equal(res.status, 200);
@@ -71,11 +71,11 @@ test("draft の試合は集計に含めない・規定打席の判定", async ()
 
 test("同率は同順位・助っ人はランキング対象外・0 は載らない", async () => {
   const { t, admin, taro, jiro, guest } = await setup();
-  const g = addGame(t);
-  bat(t, g, taro.member.id, { pa: 4, ab: 4, h: 2, hr: 1 });
-  bat(t, g, jiro.member.id, { pa: 4, ab: 4, h: 2, hr: 1 });
-  bat(t, g, admin.member.id, { pa: 4, ab: 4, h: 1 });
-  bat(t, g, guest.id, { pa: 4, ab: 4, h: 4, hr: 3 });
+  const g = await addGame(t);
+  await bat(t, g, taro.member.id, { pa: 4, ab: 4, h: 2, hr: 1 });
+  await bat(t, g, jiro.member.id, { pa: 4, ab: 4, h: 2, hr: 1 });
+  await bat(t, g, admin.member.id, { pa: 4, ab: 4, h: 1 });
+  await bat(t, g, guest.id, { pa: 4, ab: 4, h: 4, hr: 3 });
   const l = (await admin.get("/stats/leaders")).body;
   const hr = l.batting.find((c) => c.key === "hr");
   assert.deepEqual(hr.leaders.map((x) => [x.member.name, x.rank]), [["太郎", 1], ["次郎", 1]]);
@@ -90,11 +90,11 @@ test("同率は同順位・助っ人はランキング対象外・0 は載らな
 
 test("投手成績・規定投球回・防御率は規定イニング基準", async () => {
   const { t, admin, taro, jiro } = await setup();
-  const g1 = addGame(t, { date: "2026-05-01" });
-  const g2 = addGame(t, { date: "2026-05-08" });
-  pit(t, g1, taro.member.id, { outs: 21, er: 2, so: 8, h: 5, bb: 2, decision: "W" });
-  pit(t, g2, taro.member.id, { outs: 12, er: 1, so: 3, decision: "W" });
-  pit(t, g2, jiro.member.id, { outs: 3, er: 0, so: 1, decision: "S" });
+  const g1 = await addGame(t, { date: "2026-05-01" });
+  const g2 = await addGame(t, { date: "2026-05-08" });
+  await pit(t, g1, taro.member.id, { outs: 21, er: 2, so: 8, h: 5, bb: 2, decision: "W" });
+  await pit(t, g2, taro.member.id, { outs: 12, er: 1, so: 3, decision: "W" });
+  await pit(t, g2, jiro.member.id, { outs: 3, er: 0, so: 1, decision: "S" });
   const res = (await admin.get("/stats/pitching")).body;
   assert.equal(res.qualify.ip, 2);
   const p = Object.fromEntries(res.players.map((x) => [x.member.name, x]));
@@ -112,10 +112,10 @@ test("投手成績・規定投球回・防御率は規定イニング基準", as
 
 test("通算と年度別・シーズン一覧", async () => {
   const { t, admin, taro } = await setup();
-  const a = addGame(t, { season: 2025, date: "2025-06-01" });
-  const b = addGame(t, { season: 2026, date: "2026-06-01" });
-  bat(t, a, taro.member.id, { pa: 4, ab: 4, h: 1, hr: 1 });
-  bat(t, b, taro.member.id, { pa: 4, ab: 4, h: 3 });
+  const a = await addGame(t, { season: 2025, date: "2025-06-01" });
+  const b = await addGame(t, { season: 2026, date: "2026-06-01" });
+  await bat(t, a, taro.member.id, { pa: 4, ab: 4, h: 1, hr: 1 });
+  await bat(t, b, taro.member.id, { pa: 4, ab: 4, h: 3 });
   const y25 = (await admin.get("/stats/batting?season=2025")).body.players[0];
   const y26 = (await admin.get("/stats/batting")).body.players[0];
   const car = (await admin.get("/stats/batting?season=career")).body;
@@ -132,10 +132,10 @@ test("通算と年度別・シーズン一覧", async () => {
 test("チーム成績（勝敗・得失点・直近5試合・連勝）", async () => {
   const { t, admin, taro } = await setup();
   const scores = [[3, 1], [2, 5], [4, 4], [6, 0], [1, 0], [7, 3]];
-  scores.forEach(([our, their], i) => addGame(t, { date: `2026-05-0${i + 1}`, our, their }));
-  addGame(t, { date: "2026-05-09", our: 0, their: 20, status: "draft" });
-  bat(t, 1, taro.member.id, { pa: 4, ab: 4, h: 2, hr: 1, sb: 1 });
-  pit(t, 1, taro.member.id, { outs: 21, er: 1 });
+  for (const [i, [our, their]] of scores.entries()) await addGame(t, { date: `2026-05-0${i + 1}`, our, their });
+  await addGame(t, { date: "2026-05-09", our: 0, their: 20, status: "draft" });
+  await bat(t, 1, taro.member.id, { pa: 4, ab: 4, h: 2, hr: 1, sb: 1 });
+  await pit(t, 1, taro.member.id, { outs: 21, er: 1 });
   const s = (await admin.get("/stats/team")).body;
   assert.equal(s.games, 6);
   assert.deepEqual([s.w, s.l, s.d], [4, 1, 1]);
@@ -154,17 +154,17 @@ test("チーム成績（勝敗・得失点・直近5試合・連勝）", async (
 test("選手ページ: 今季・通算・年度別・試合ログ・タイトル・順位", async () => {
   const { t, admin, taro, jiro } = await setup();
   // 2025: 太郎が首位打者・本塁打王、次郎が打点王
-  const a1 = addGame(t, { season: 2025, date: "2025-05-01" });
-  bat(t, a1, taro.member.id, { pa: 4, ab: 4, h: 3, hr: 2, rbi: 2 });
-  bat(t, a1, jiro.member.id, { pa: 4, ab: 4, h: 1, rbi: 4 });
-  pit(t, a1, taro.member.id, { outs: 21, er: 1, so: 9, decision: "W" });
+  const a1 = await addGame(t, { season: 2025, date: "2025-05-01" });
+  await bat(t, a1, taro.member.id, { pa: 4, ab: 4, h: 3, hr: 2, rbi: 2 });
+  await bat(t, a1, jiro.member.id, { pa: 4, ab: 4, h: 1, rbi: 4 });
+  await pit(t, a1, taro.member.id, { outs: 21, er: 1, so: 9, decision: "W" });
   // 2026（今季）はタイトル対象外
-  const b1 = addGame(t, { season: 2026, date: "2026-05-01", our: 2, their: 3, opponent: "大宮キングス" });
-  const b2 = addGame(t, { season: 2026, date: "2026-05-08" });
-  bat(t, b1, taro.member.id, { pa: 4, ab: 4, h: 1, rbi: 1 });
-  bat(t, b2, taro.member.id, { pa: 4, ab: 3, h: 2, hr: 1, bb: 1, rbi: 3 });
-  bat(t, b1, jiro.member.id, { pa: 4, ab: 4, h: 0 });
-  bat(t, b2, jiro.member.id, { pa: 4, ab: 4, h: 1 });
+  const b1 = await addGame(t, { season: 2026, date: "2026-05-01", our: 2, their: 3, opponent: "大宮キングス" });
+  const b2 = await addGame(t, { season: 2026, date: "2026-05-08" });
+  await bat(t, b1, taro.member.id, { pa: 4, ab: 4, h: 1, rbi: 1 });
+  await bat(t, b2, taro.member.id, { pa: 4, ab: 3, h: 2, hr: 1, bb: 1, rbi: 3 });
+  await bat(t, b1, jiro.member.id, { pa: 4, ab: 4, h: 0 });
+  await bat(t, b2, jiro.member.id, { pa: 4, ab: 4, h: 1 });
 
   const res = await jiro.get(`/stats/players/${taro.member.id}`);
   assert.equal(res.status, 200);
@@ -227,8 +227,11 @@ test("dev-seed は ALLOW_MOCK=true の管理者だけ・本番は 404", async ()
   const team = (await admin.get("/stats/team")).body;
   assert.equal(team.games, 8);
   assert.ok((await admin.get("/stats/batting")).body.players.length >= 9);
-  // 2回実行しても重複しない
-  await admin.post("/stats/dev-seed", {});
+  // 2回実行しても重複しない（打席明細 games_at_bats も一緒に消える）
+  const seedGame = (await dev.db.one("SELECT id FROM games WHERE memo = '[dev-seed]' ORDER BY id LIMIT 1")).id;
+  await dev.db.run("INSERT INTO games_at_bats(game_id, member_id, seq, result) VALUES(?, ?, 1, 'single')", seedGame, admin.member.id);
+  assert.equal((await admin.post("/stats/dev-seed", {})).status, 200);
+  assert.equal((await dev.db.one("SELECT COUNT(*) AS n FROM games_at_bats WHERE game_id = ?", seedGame)).n, 0);
   assert.equal((await admin.get("/stats/team")).body.games, 8);
-  assert.equal(dev.db.one("SELECT COUNT(*) AS n FROM games WHERE status = 'draft'").n, 1);
+  assert.equal((await dev.db.one("SELECT COUNT(*) AS n FROM games WHERE status = 'draft'")).n, 1);
 });

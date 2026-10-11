@@ -62,16 +62,21 @@ function parseSeason(c) {
 
 const seasonLabel = (season) => (season === null ? "career" : season);
 
-function finalGames(db, season) {
+// 確定試合がある年度（新しい順）
+async function finalSeasons(db) {
+  return (await db.all("SELECT DISTINCT season FROM games WHERE status = 'final' ORDER BY season DESC")).map((r) => r.season);
+}
+
+async function finalGames(db, season) {
   return season === null
     ? db.all("SELECT * FROM games WHERE status = 'final' ORDER BY date, id")
     : db.all("SELECT * FROM games WHERE status = 'final' AND season = ? ORDER BY date, id", season);
 }
 
-function rowsOf(db, table, season) {
+async function rowsOf(db, table, season) {
   const sql = `SELECT t.*, g.date AS g_date, g.season AS g_season FROM ${table} t
     JOIN games g ON g.id = t.game_id WHERE g.status = 'final' ${season === null ? "" : "AND g.season = ?"}
-    ORDER BY g.date, g.id`;
+    ORDER BY g.date, g.id, t.member_id`;
   return season === null ? db.all(sql) : db.all(sql, season);
 }
 
@@ -84,13 +89,14 @@ const groupBy = (rows, key) => {
   return m;
 };
 
-function membersById(db) {
-  return new Map(db.all("SELECT * FROM members").map((m) => [m.id, m]));
+async function membersById(db) {
+  return new Map((await db.all("SELECT * FROM members")).map((m) => [m.id, m]));
 }
 
 // シーズン（または通算）の選手ごとの集計
-function collect(db, settings, season, members = membersById(db)) {
-  const games = finalGames(db, season);
+async function collect(db, settings, season, members = null) {
+  members ??= await membersById(db);
+  const games = await finalGames(db, season);
   const n = games.length;
   const innings = Number(settings.inningsPerGame) || 7;
   const qualify = {
@@ -101,8 +107,8 @@ function collect(db, settings, season, members = membersById(db)) {
     ip: Math.floor(n * QUALIFY_IP_PER_GAME),
     innings,
   };
-  const batRows = rowsOf(db, "batting", season);
-  const pitRows = rowsOf(db, "pitching", season);
+  const batRows = await rowsOf(db, "batting", season);
+  const pitRows = await rowsOf(db, "pitching", season);
 
   const batting = [];
   for (const [id, rows] of groupBy(batRows, "member_id")) {
@@ -195,8 +201,8 @@ const strip = (p) => ({ member: p.member, games: p.games, totals: p.totals, rate
 
 // ---------------------------------------------------------------- チーム成績
 
-function teamStats(db, settings, season) {
-  const data = collect(db, settings, season);
+async function teamStats(db, settings, season) {
+  const data = await collect(db, settings, season);
   const results = data.games.map((g) => ({
     id: g.id,
     date: g.date,
@@ -306,12 +312,12 @@ function trendOf(batRows) {
   return out;
 }
 
-function playerPage(c) {
+async function playerPage(c) {
   const id = v.int(c.params.id, "選手", { min: 1, required: true });
-  const row = c.db.one("SELECT * FROM members WHERE id = ?", id);
+  const row = await c.db.one("SELECT * FROM members WHERE id = ?", id);
   if (!row) throw notFound("選手が見つかりません");
   const member = publicMember(row);
-  const members = membersById(c.db);
+  const members = await membersById(c.db);
   const current = Number(c.settings.season);
 
   const pick = (data) => {
@@ -321,16 +327,14 @@ function playerPage(c) {
     return { batting: own(b), pitching: own(p), qualify: data.qualify };
   };
 
-  const seasonData = collect(c.db, c.settings, current, members);
-  const careerData = collect(c.db, c.settings, null, members);
-  const seasons = c.db
-    .all("SELECT DISTINCT season FROM games WHERE status = 'final' ORDER BY season DESC")
-    .map((r) => r.season);
+  const seasonData = await collect(c.db, c.settings, current, members);
+  const careerData = await collect(c.db, c.settings, null, members);
+  const seasons = await finalSeasons(c.db);
 
   const byYear = [];
   const titles = [];
   for (const s of seasons) {
-    const data = s === current ? seasonData : collect(c.db, c.settings, s, members);
+    const data = s === current ? seasonData : await collect(c.db, c.settings, s, members);
     const mine = pick(data);
     if (mine.batting || mine.pitching) byYear.push({ season: s, ...mine });
     if (s >= current || member.isGuest) continue;
@@ -428,7 +432,7 @@ const DUMMY_PLAYERS = [
 ];
 const OPPONENTS = ["川口ファイターズ", "浦和レッドソックス", "大宮キングス", "所沢ブルーウェーブ", "越谷ドラゴンズ", "草加サンダース", "戸田マリナーズ", "朝霞ベアーズ", "春日部タイガース", "上尾イーグルス"];
 
-function devSeed(c) {
+async function devSeed(c) {
   if (c.env?.ALLOW_MOCK !== "true") throw notFound("APIが見つかりません");
   if (!c.user) throw new ApiError(401, "login_required", "LINEログインが必要です");
   if (!c.member) throw new ApiError(403, "not_member", "先にチームに参加してください");
@@ -441,24 +445,23 @@ function devSeed(c) {
   const season = Number(c.settings.season);
   const SEED_MEMO = "[dev-seed]";
 
-  return c.db.tx(() => {
-    // 以前のダミー試合を消して作り直す
-    const old = c.db.all("SELECT id FROM games WHERE memo = ?", SEED_MEMO).map((r) => r.id);
-    for (const gid of old) {
-      c.db.run("DELETE FROM batting WHERE game_id = ?", gid);
-      c.db.run("DELETE FROM pitching WHERE game_id = ?", gid);
-      c.db.run("DELETE FROM games_at_bats WHERE game_id = ?", gid);
-      c.db.run("DELETE FROM games WHERE id = ?", gid);
+  // ハンドラー全体が1トランザクション（c.db は tx）なので、途中で失敗すればすべて取り消される
+  return c.db.tx(async (db) => {
+    // 以前のダミー試合を消して作り直す（明細 → 試合の順）
+    const oldIds = "SELECT id FROM games WHERE memo = ?";
+    for (const t of ["batting", "pitching", "games_at_bats"]) {
+      await db.run(`DELETE FROM ${t} WHERE game_id IN (${oldIds})`, SEED_MEMO);
     }
+    await db.run("DELETE FROM games WHERE memo = ?", SEED_MEMO);
     // 選手: 在籍メンバー＋ダミー選手（名前が同じなら再利用）
     const roster = [];
-    for (const m of c.db.all("SELECT * FROM members WHERE active = 1 AND line_user_id IS NOT NULL")) {
+    for (const m of await db.all("SELECT * FROM members WHERE active = 1 AND line_user_id IS NOT NULL ORDER BY id")) {
       roster.push({ id: m.id, skill: 0.24 + rnd() * 0.12, power: 0.05 + rnd() * 0.15, speed: rnd() * 0.5, pitcher: (m.positions || "").includes("投") });
     }
     for (const d of DUMMY_PLAYERS) {
-      let m = c.db.one("SELECT * FROM members WHERE name = ? AND line_user_id IS NULL", d.name);
+      let m = await db.one("SELECT * FROM members WHERE name = ? AND line_user_id IS NULL ORDER BY id LIMIT 1", d.name);
       if (!m) {
-        const { lastId } = c.db.run(
+        const { lastId } = await db.run(
           "INSERT INTO members(name, number, positions, throws, bats, is_guest, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
           d.name, d.number, d.positions, d.throws, d.bats, d.guest ? 1 : 0, now,
         );
@@ -512,30 +515,32 @@ function devSeed(c) {
       }
       const lineUs = splitRuns(ourScore, innings, rnd);
       const lineThem = splitRuns(theirScore, innings, rnd);
-      const { lastId: gid } = c.db.run(
+      const { lastId: gid } = await db.run(
         `INSERT INTO games(season, date, opponent, venue, kind, innings, bat_first, our_score, their_score, line_us, line_them, status, memo, created_at, updated_at)
          VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         g.season, g.date, pick(OPPONENTS), pick(["河川敷グラウンド", "市民球場", "中央公園野球場"]), pick(["league", "friendly", "friendly", "tournament"]),
         innings, rnd() < 0.5 ? 1 : 0, ourScore, theirScore, JSON.stringify(lineUs), JSON.stringify(lineThem), g.status, SEED_MEMO, now, now,
       );
-      for (const b of bat) {
-        c.db.run(
-          `INSERT INTO batting(game_id, member_id, order_no, position, pa, ab, h, d2, d3, hr, rbi, r, so, bb, hbp, sh, sf, sb, e, updated_at)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          gid, b.member_id, b.order_no, null, b.pa, b.ab, b.h, b.d2, b.d3, b.hr, b.rbi, b.r, b.so, b.bb, b.hbp, b.sh, b.sf, b.sb, b.e, now,
-        );
-      }
-      for (const p of pit) {
-        c.db.run(
-          `INSERT INTO pitching(game_id, member_id, order_no, outs, bf, pitches, h, hr, so, bb, hbp, r, er, decision, updated_at)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          gid, p.member_id, p.order_no, p.outs, p.bf, p.pitches, p.h, p.hr, p.so, p.bb, p.hbp, p.r, p.er, p.decision, now,
-        );
-      }
+      // 1試合分の明細はまとめて1文で INSERT（往復回数を減らす）
+      await insertRows(db, "batting",
+        ["game_id", "member_id", "order_no", "position", "pa", "ab", "h", "d2", "d3", "hr", "rbi", "r", "so", "bb", "hbp", "sh", "sf", "sb", "e", "updated_at"],
+        bat.map((b) => [gid, b.member_id, b.order_no, null, b.pa, b.ab, b.h, b.d2, b.d3, b.hr, b.rbi, b.r, b.so, b.bb, b.hbp, b.sh, b.sf, b.sb, b.e, now]),
+      );
+      await insertRows(db, "pitching",
+        ["game_id", "member_id", "order_no", "outs", "bf", "pitches", "h", "hr", "so", "bb", "hbp", "r", "er", "decision", "updated_at"],
+        pit.map((p) => [gid, p.member_id, p.order_no, p.outs, p.bf, p.pitches, p.h, p.hr, p.so, p.bb, p.hbp, p.r, p.er, p.decision, now]),
+      );
       created++;
     }
     return { ok: true, games: created };
   });
+}
+
+// 複数行 INSERT（rows は値の配列の配列）
+async function insertRows(db, table, cols, rows) {
+  if (!rows.length) return;
+  const ph = `(${cols.map(() => "?").join(", ")})`;
+  await db.run(`INSERT INTO ${table}(${cols.join(", ")}) VALUES ${rows.map(() => ph).join(", ")} RETURNING game_id`, ...rows.flat());
 }
 
 function seasonDate(season, i, n) {
@@ -610,27 +615,27 @@ export default {
     [
       "GET",
       "/stats/batting",
-      (c) => {
+      async (c) => {
         const season = parseSeason(c);
-        const data = collect(c.db, c.settings, season);
+        const data = await collect(c.db, c.settings, season);
         return { season: seasonLabel(season), qualify: data.qualify, players: data.batting.map(strip) };
       },
     ],
     [
       "GET",
       "/stats/pitching",
-      (c) => {
+      async (c) => {
         const season = parseSeason(c);
-        const data = collect(c.db, c.settings, season);
+        const data = await collect(c.db, c.settings, season);
         return { season: seasonLabel(season), qualify: data.qualify, players: data.pitching.map(strip) };
       },
     ],
     [
       "GET",
       "/stats/leaders",
-      (c) => {
+      async (c) => {
         const season = parseSeason(c);
-        const data = collect(c.db, c.settings, season);
+        const data = await collect(c.db, c.settings, season);
         return { season: seasonLabel(season), qualify: data.qualify, ...leaders(data, c.member?.id) };
       },
     ],
@@ -638,10 +643,8 @@ export default {
     [
       "GET",
       "/stats/seasons",
-      (c) => {
-        const seasons = c.db
-          .all("SELECT DISTINCT season FROM games WHERE status = 'final' ORDER BY season DESC")
-          .map((r) => r.season);
+      async (c) => {
+        const seasons = await finalSeasons(c.db);
         const current = Number(c.settings.season);
         if (!seasons.includes(current)) seasons.unshift(current);
         seasons.sort((a, b) => b - a);
