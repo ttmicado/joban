@@ -19,7 +19,7 @@
 //   settings（チーム設定）, emit(name, payload), requireAdminOrSelf(memberId)
 // handler は JSON にできる値を返す。JSON 以外は raw(body, { status, headers }) を返す。
 
-import { ApiError, forbidden, notFound } from "./errors.js";
+import { ApiError, badRequest, forbidden, notFound } from "./errors.js";
 import { DEFAULT_SETTINGS, coreMigrations } from "./schema.js";
 import { jst } from "./time.js";
 
@@ -111,7 +111,8 @@ export function createTeamApp({ db, env = {}, features = [], clock = () => Date.
         if (!route) throw notFound("APIが見つかりません");
         c.params = route.params;
         c.query = req.query || {};
-        c.body = req.body || {};
+        // 本文はオブジェクトだけ受け付ける（配列・文字列・数値などは空として扱う）
+        c.body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
         c.rawBody = req.rawBody ?? null; // 署名検証が必要な webhook 用
         c.headers = req.headers || {};
         c.user = req.user || null;
@@ -192,7 +193,13 @@ function match(routes, method, path) {
     const m = r.re.exec(path);
     if (!m) continue;
     const params = {};
-    r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
+    r.keys.forEach((k, i) => {
+      try {
+        params[k] = decodeURIComponent(m[i + 1]);
+      } catch {
+        throw badRequest("URLの形式が不正です");
+      }
+    });
     return { route: r, params };
   }
   return null;

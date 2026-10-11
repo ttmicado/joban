@@ -552,8 +552,11 @@ CREATE TABLE IF NOT EXISTS poll_answers (
         if (c.db.one("SELECT id FROM games WHERE event_id = ? LIMIT 1", e.id)) {
           throw conflict("試合結果が登録されている予定は削除できません。中止にしてください");
         }
+        const hasWakeups = !!c.db.one("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wakeups'");
         c.db.tx(() => {
           c.db.run("DELETE FROM attendance WHERE event_id = ?", e.id);
+          // 起床報告（community 機能）も一緒に消す
+          if (hasWakeups) c.db.run("DELETE FROM wakeups WHERE event_id = ?", e.id);
           c.db.run("DELETE FROM events WHERE id = ?", e.id);
           c.db.run("UPDATE polls SET event_id = NULL WHERE event_id = ?", e.id);
         });

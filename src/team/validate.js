@@ -8,6 +8,7 @@ export const v = {
       if (required) throw badRequest(`${label}を入力してください`);
       return null;
     }
+    if (typeof val !== "string" && typeof val !== "number") throw badRequest(`${label}の形式が不正です`);
     const s = String(val).trim();
     if (s.length > max) throw badRequest(`${label}は${max}文字以内にしてください`);
     return s;
@@ -17,6 +18,7 @@ export const v = {
       if (required) throw badRequest(`${label}を入力してください`);
       return null;
     }
+    if (typeof val !== "number" && typeof val !== "string") throw badRequest(`${label}の値が不正です`);
     const n = Number(val);
     if (!Number.isInteger(n) || n < min || n > max) throw badRequest(`${label}の値が不正です`);
     return n;

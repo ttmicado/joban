@@ -24,5 +24,12 @@ export function toTs(date, time = "00:00") {
   return Date.UTC(y, m - 1, d, hh, mm) - JST;
 }
 
-export const isDate = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+// 実在する日付だけ true（"2026-02-30" や "2026-13-01" は false）
+export const isDate = (s) => {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number);
+  if (y < 1900 || y > 2999) return false;
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+};
 export const isTime = (s) => typeof s === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);

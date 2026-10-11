@@ -28,6 +28,7 @@ function profileFields(body, { requireName = false } = {}) {
   if (body.number !== undefined) out.number = v.str(body.number, "背番号", { max: 4 });
   if (body.positions !== undefined) {
     const list = Array.isArray(body.positions) ? body.positions : String(body.positions || "").split(",");
+    if (list.length > 20) throw badRequest("守備位置の値が不正です");
     const clean = list.map((p) => String(p).trim()).filter(Boolean);
     for (const p of clean) if (!POSITIONS.includes(p)) throw badRequest("守備位置の値が不正です");
     out.positions = [...new Set(clean)].join(",");

@@ -611,7 +611,9 @@ async function remindEve(c) {
 async function wakeupCheck(c) {
   if (!canSend(c, "wakeup")) return;
   if (!tableExists(c, "wakeups")) return; // community 機能がまだ無いときはスキップ
-  for (const event of c.db.all("SELECT * FROM events WHERE date = ? AND status = 'scheduled'", c.now.date)) {
+  // 集合が 0:00〜1:29 の予定は、90分前のチェックが前日になるので翌日の予定も見る
+  const days = [c.now.date, addDays(c.now.date, 1)];
+  for (const event of c.db.all("SELECT * FROM events WHERE date IN (?, ?) AND status = 'scheduled'", ...days)) {
     const meet = event.meet_time || event.start_time;
     if (!meet) continue;
     const meetTs = toTs(event.date, meet);
@@ -683,7 +685,9 @@ async function statsInputRemind(c) {
     await c.once(`line:stats:${game.id}`, async () => {
       const rows = c.db.all(
         `SELECT m.name FROM batting b JOIN members m ON m.id = b.member_id
-         WHERE b.game_id = ? AND b.pa = 0 ORDER BY b.order_no, m.id`,
+         WHERE b.game_id = ? AND b.pa = 0 AND m.active = 1 AND COALESCE(b.position, '') != '控え'
+           AND NOT EXISTS (SELECT 1 FROM pitching p WHERE p.game_id = b.game_id AND p.member_id = b.member_id)
+         ORDER BY b.order_no, m.id`,
         game.id,
       );
       if (!rows.length) return;

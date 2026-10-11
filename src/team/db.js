@@ -5,8 +5,11 @@
 //   db.tx(fn)               → fn をトランザクション内で同期実行
 //   db.exec(sql)            → 複数ステートメントの実行（マイグレーション用）
 
+// undefined → NULL、boolean → 0/1、NaN・Infinity → NULL（DO の sql.exec はこれらを受け付けないため）
 const norm = (params) =>
-  params.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v));
+  params.map((v) =>
+    v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : typeof v === "number" && !Number.isFinite(v) ? null : v,
+  );
 
 const plain = (row) => (row ? { ...row } : null);
 

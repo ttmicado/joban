@@ -20,9 +20,15 @@ export async function authenticate(request, env) {
   if (token.startsWith("mock:")) {
     if (env.ALLOW_MOCK !== "true") throw new HttpError(401, "mock_disabled", "モックログインは無効です");
     const [, id, name] = token.split(":");
+    let displayName = `テスト${id}`;
+    try {
+      if (name) displayName = decodeURIComponent(name);
+    } catch {
+      throw new HttpError(401, "bad_mock", "モックログインの形式が不正です");
+    }
     return {
       userId: `mock-${id}`,
-      displayName: decodeURIComponent(name || `テスト${id}`),
+      displayName,
       pictureUrl: "",
     };
   }
@@ -53,7 +59,17 @@ export async function authenticate(request, env) {
 
 export function checkAdmin(request, env) {
   const key = request.headers.get("X-Admin-Key") || "";
-  if (!env.ADMIN_KEY || key !== env.ADMIN_KEY) {
+  if (!env.ADMIN_KEY || !safeEqualStr(key, env.ADMIN_KEY)) {
     throw new HttpError(403, "forbidden", "管理キーが違います");
   }
+}
+
+// 長さが同じなら内容に関係なく同じ時間で比較する（管理キーなどの比較用）
+export function safeEqualStr(a, b) {
+  a = String(a ?? "");
+  b = String(b ?? "");
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }

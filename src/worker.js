@@ -1,4 +1,5 @@
 import { HttpError, authenticate, checkAdmin } from "./auth.js";
+import { readJson } from "./http.js";
 
 export { Lottery } from "./garapon/do.js";
 export { Team } from "./team/do.js";
@@ -47,9 +48,8 @@ async function team(request, env, path) {
   const user = request.headers.get("Authorization") ? await authenticate(request, env) : null;
   let body = null;
   if (request.method !== "GET" && request.method !== "HEAD") {
-    body = await request.json().catch(() => {
-      throw new HttpError(400, "bad_json", "リクエストの形式が不正です");
-    });
+    // DELETE など本文なしのリクエストは body = null（空本文を不正な JSON 扱いしない）
+    body = await readJson(request);
   }
   const url = new URL(request.url);
   return teamRaw(env, {
@@ -114,11 +114,15 @@ async function garapon(request, env, path) {
       return json(await lottery.adminState());
     case "POST /admin/config":
       checkAdmin(request, env);
-      return asResult(await lottery.adminConfig(await request.json()));
+      const patch = await readJson(request);
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+        throw new HttpError(400, "bad_json", "リクエストの形式が不正です");
+      }
+      return asResult(await lottery.adminConfig(patch));
     case "POST /admin/reset": {
       checkAdmin(request, env);
-      const body = await request.json().catch(() => ({}));
-      return json(await lottery.adminReset(Boolean(body.keepEntries)));
+      const body = await readJson(request).catch(() => null);
+      return json(await lottery.adminReset(Boolean(body?.keepEntries)));
     }
     default:
       return json({ error: "not_found", message: "Not found" }, 404);

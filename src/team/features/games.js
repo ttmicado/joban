@@ -212,7 +212,8 @@ function createGame(c) {
     if (!ev) throw notFound("予定が見つかりません");
     if (c.db.one("SELECT id FROM games WHERE event_id = ?", eventId)) throw conflict("この予定の試合はすでに作成されています");
     b.date ??= ev.date;
-    b.opponent ??= ev.opponent || ev.title;
+    // 予定のタイトルは60文字まで入るので、対戦相手の上限（40文字）に収める
+    b.opponent ??= (ev.opponent || ev.title || "").slice(0, 40);
     if (b.venue === undefined) b.venue = ev.venue;
   }
   const f = gameFields(c, b, { creating: true });

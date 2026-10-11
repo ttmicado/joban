@@ -447,6 +447,7 @@ function devSeed(c) {
     for (const gid of old) {
       c.db.run("DELETE FROM batting WHERE game_id = ?", gid);
       c.db.run("DELETE FROM pitching WHERE game_id = ?", gid);
+      c.db.run("DELETE FROM games_at_bats WHERE game_id = ?", gid);
       c.db.run("DELETE FROM games WHERE id = ?", gid);
     }
     // 選手: 在籍メンバー＋ダミー選手（名前が同じなら再利用）
