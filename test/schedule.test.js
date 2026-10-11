@@ -272,3 +272,198 @@ test("ics: 内容と token 不一致で 404", async () => {
   assert.equal(folded.replace(/\r\n /g, ""), long);
   for (const l of folded.split("\r\n")) assert.ok(new TextEncoder().encode(l).length <= 75);
 });
+
+test("イベント: 一般メンバーも登録できる（試合・練習は管理者だけ）", async () => {
+  const { admin, taro, spy } = await setup();
+  assert.equal((await taro.post("/events", { type: "game", date: "2026-10-18" })).status, 403);
+  assert.equal((await taro.post("/events", { type: "practice", date: "2026-10-18" })).status, 403);
+  assert.equal((await taro.post("/events", { date: "2026-10-18" })).status, 403); // 種類なしは試合扱い
+
+  const r = await taro.post("/events", {
+    type: "event",
+    title: "夏合宿",
+    date: "2026-11-14",
+    end_date: "2026-11-15",
+    meet_time: "08:00",
+    meet_place: "駅前ロータリー",
+    venue: "高原グラウンド＆ペンション",
+    fee: 15000,
+    fee_note: "宿泊・食事込み",
+    belongings: "着替え・グローブ",
+    rsvp_deadline: "2026-11-01",
+  });
+  assert.equal(r.status, 200);
+  const e = r.body.event;
+  assert.equal(e.type, "event");
+  assert.equal(e.end_date, "2026-11-15");
+  assert.equal(e.fee, 15000);
+  assert.equal(e.fee_note, "宿泊・食事込み");
+  assert.equal(e.created_by, taro.member.id);
+  assert.ok(spy.got.some(([n, p]) => n === "event.created" && p.event.id === e.id));
+
+  // タイトル空なら「イベント」
+  const other = await taro.post("/events", { type: "other", date: "2026-10-30" });
+  assert.equal(other.status, 200);
+  assert.equal((await taro.post("/events", { type: "event", date: "2026-10-30" })).body.event.title, "イベント");
+
+  // 詳細: 期間の日数・登録者・編集できるか
+  const d = await taro.get(`/events/${e.id}`);
+  assert.equal(d.body.event.days, 2);
+  assert.equal(d.body.creator.name, "太郎");
+  assert.equal(d.body.creator.line_user_id, undefined);
+  assert.equal(d.body.can_edit, true);
+  assert.equal((await admin.get(`/events/${e.id}`)).body.can_edit, true);
+
+  // 管理者は全種類
+  assert.equal((await admin.post("/events", { type: "event", date: "2026-12-26", title: "納会" })).status, 200);
+});
+
+test("イベント: 登録者は編集・中止・削除できる／他人は 403／管理者は可", async () => {
+  const { admin, taro, jiro } = await setup();
+  const e = (await taro.post("/events", { type: "event", title: "BBQ", date: "2026-10-25" })).body.event;
+  const g = (await admin.post("/events", { type: "game", date: "2026-10-18" })).body.event;
+
+  assert.equal((await jiro.get(`/events/${e.id}`)).body.can_edit, false);
+  assert.equal((await taro.get(`/events/${g.id}`)).body.can_edit, false);
+  assert.equal((await jiro.patch(`/events/${e.id}`, { title: "x" })).status, 403);
+  assert.equal((await jiro.post(`/events/${e.id}/cancel`)).status, 403);
+  assert.equal((await jiro.del(`/events/${e.id}`)).status, 403);
+  assert.equal((await taro.patch(`/events/${g.id}`, { title: "x" })).status, 403);
+  assert.equal((await taro.del(`/events/${g.id}`)).status, 403);
+
+  // 登録者
+  const up = await taro.patch(`/events/${e.id}`, { title: "秋のBBQ", fee: 3000 });
+  assert.equal(up.status, 200);
+  assert.equal(up.body.event.title, "秋のBBQ");
+  assert.equal(up.body.event.fee, 3000);
+  // 種類を試合に変えるのは不可
+  assert.equal((await taro.patch(`/events/${e.id}`, { type: "game" })).status, 403);
+  assert.equal((await taro.patch(`/events/${e.id}`, { type: "other" })).status, 200);
+  assert.equal((await taro.post(`/events/${e.id}/cancel`)).body.event.status, "canceled");
+  assert.equal((await taro.post(`/events/${e.id}/restore`)).body.event.status, "scheduled");
+
+  // 一覧にも can_edit
+  const list = (await jiro.get("/events")).body.events;
+  assert.equal(list.find((x) => x.id === e.id).can_edit, false);
+  assert.equal((await taro.get("/events")).body.events.find((x) => x.id === e.id).can_edit, true);
+
+  // 管理者は他人のイベントも
+  assert.equal((await admin.patch(`/events/${e.id}`, { note: "雨天中止" })).status, 200);
+  assert.equal((await admin.post(`/events/${e.id}/cancel`)).status, 200);
+  assert.equal((await taro.del(`/events/${e.id}`)).status, 200);
+  assert.equal((await taro.get(`/events/${e.id}`)).status, 404);
+  const e2 = (await jiro.post("/events", { type: "event", date: "2026-10-26" })).body.event;
+  assert.equal((await admin.del(`/events/${e2.id}`)).status, 200);
+});
+
+test("イベント: 期間（end_date）と参加費の検証", async () => {
+  const { taro } = await setup();
+  const base = { type: "event", title: "合宿", date: "2026-11-14" };
+  assert.equal((await taro.post("/events", { ...base, end_date: "2026-11-13" })).status, 400);
+  assert.equal((await taro.post("/events", { ...base, end_date: "2026/11/15" })).status, 400);
+  assert.equal((await taro.post("/events", { ...base, end_date: "2027-01-14" })).status, 400); // 長すぎ
+  assert.equal((await taro.post("/events", { ...base, fee: -1 })).status, 400);
+  assert.equal((await taro.post("/events", { ...base, fee: 1.5 })).status, 400);
+  assert.equal((await taro.post("/events", { ...base, fee: 1000001 })).status, 400);
+  assert.equal((await taro.post("/events", { ...base, fee: "abc" })).status, 400);
+  assert.equal((await taro.post("/events", { ...base, fee: 0 })).body.event.fee, 0);
+  // 同じ日なら1日の予定
+  assert.equal((await taro.post("/events", { ...base, end_date: "2026-11-14" })).body.event.end_date, null);
+  // 複数日なら終了時間（最終日）が開始時間より前でもよい
+  const r = await taro.post("/events", { ...base, end_date: "2026-11-15", start_time: "13:00", end_time: "12:00" });
+  assert.equal(r.status, 200);
+  assert.equal((await taro.post("/events", { ...base, start_time: "13:00", end_time: "12:00" })).status, 400);
+  // 編集で最終日を開始日より前にはできない
+  assert.equal((await taro.patch(`/events/${r.body.event.id}`, { date: "2026-11-16" })).status, 400);
+  const p = await taro.patch(`/events/${r.body.event.id}`, { end_date: "2026-11-16", fee: "8000" });
+  assert.equal(p.body.event.end_date, "2026-11-16");
+  assert.equal(p.body.event.fee, 8000);
+  assert.equal((await taro.patch(`/events/${r.body.event.id}`, { end_date: "" })).status, 400); // 終了時間 < 開始時間 の1日予定になる
+  assert.equal((await taro.patch(`/events/${r.body.event.id}`, { end_date: "", end_time: "" })).body.event.end_date, null);
+});
+
+test("イベント: 一覧（期間中・月またぎ・表示項目）と出欠", async () => {
+  const { t, admin, taro, jiro } = await setup();
+  const camp = (
+    await taro.post("/events", { type: "event", title: "夏合宿", date: "2026-10-31", end_date: "2026-11-02", fee: 15000, fee_note: "宿泊込み", venue: "高原" })
+  ).body.event;
+  await admin.post("/events", { type: "game", date: "2026-11-01", opponent: "北町" });
+
+  const up = (await jiro.get("/events")).body.events;
+  const row = up.find((e) => e.id === camp.id);
+  assert.equal(row.type, "event");
+  assert.equal(row.end_date, "2026-11-02");
+  assert.equal(row.days, 3);
+  assert.equal(row.fee, 15000);
+  assert.equal(row.fee_note, "宿泊込み");
+  assert.deepEqual(row.counts, { yes: 0, maybe: 0, no: 0 });
+  // 11月のカレンダーにも出る（10/31 開始）
+  const nov = (await jiro.get("/events?range=month&month=2026-11")).body.events;
+  assert.deepEqual(nov.map((e) => e.id).includes(camp.id), true);
+  assert.equal((await jiro.get("/events?range=month&month=2026-10")).body.events.length, 1);
+
+  // 出欠は同じ
+  const r = await jiro.put(`/events/${camp.id}/rsvp`, { status: "yes", comment: "1日目だけ" });
+  assert.equal(r.body.event.counts.yes, 1);
+
+  // 期間中はまだ「これから」・出欠も変更できる
+  t.setNow("2026-11-01T09:00");
+  assert.ok((await jiro.get("/events")).body.events.some((e) => e.id === camp.id));
+  assert.ok(!(await jiro.get("/events?range=past")).body.events.some((e) => e.id === camp.id));
+  assert.equal((await jiro.put(`/events/${camp.id}/rsvp`, { status: "maybe" })).status, 200);
+  assert.equal((await taro.get("/events/next")).body.event.id, camp.id);
+  // 終わったら過去
+  t.setNow("2026-11-03T09:00");
+  assert.ok((await jiro.get("/events?range=past")).body.events.some((e) => e.id === camp.id));
+  assert.equal((await jiro.put(`/events/${camp.id}/rsvp`, { status: "yes" })).status, 400);
+});
+
+test("ics: 複数日のイベントは終日（DTEND は最終日の翌日）・ライブも含む", async () => {
+  const { t, admin, taro } = await setup();
+  const camp = (
+    await taro.post("/events", {
+      type: "event",
+      title: "夏合宿",
+      date: "2026-11-14",
+      end_date: "2026-11-15",
+      meet_time: "08:00",
+      start_time: "09:00",
+      end_time: "15:00",
+      venue: "高原グラウンド",
+      fee: 15000,
+      fee_note: "宿泊・食事込み",
+    })
+  ).body.event;
+  const bbq = (await taro.post("/events", { type: "event", title: "BBQ", date: "2026-11-21", start_time: "11:00", end_time: "15:00" })).body.event;
+  const live1 = (await t.db.run(
+    `INSERT INTO lives(title, performer, date, open_time, start_time, venue, price_advance, price_door, status, created_at, updated_at)
+     VALUES('単独ライブ', 'アミダライン', '2026-11-03', '18:30', '19:00', '新宿バティオス', 2000, 2500, 'scheduled', 0, 0)`,
+  )).lastId;
+  const live2 = (await t.db.run(
+    `INSERT INTO lives(title, date, venue, status, created_at, updated_at) VALUES('中止ライブ', '2026-11-10', '下北沢', 'canceled', 0, 0)`,
+  )).lastId;
+  const token = (await admin.get("/settings/ics")).body.token;
+  const body = (await t.anon.get(`/ics/${token}`)).body;
+  for (const line of body.split("\r\n")) assert.ok(new TextEncoder().encode(line).length <= 75, `75オクテット超: ${line}`);
+  const u = body.replace(/\r\n /g, "");
+  const block = (uid) => u.slice(u.indexOf(`UID:${uid}@`), u.indexOf("END:VEVENT", u.indexOf(`UID:${uid}@`)));
+  const c = block(`event-${camp.id}`);
+  assert.match(c, /DTSTART;VALUE=DATE:20261114\r\nDTEND;VALUE=DATE:20261116/);
+  assert.match(c, /SUMMARY:夏合宿/);
+  assert.match(c, /CATEGORIES:イベント/);
+  assert.match(c, /DESCRIPTION:期間: 11\/14\(土\)〜11\/15\(日\)（1泊2日）\\n集合: 08:00/);
+  assert.match(c, /参加費: 15\\,000円（宿泊・食事込み）/);
+  const b = block(`event-${bbq.id}`);
+  assert.match(b, /DTSTART;TZID=Asia\/Tokyo:20261121T110000\r\nDTEND;TZID=Asia\/Tokyo:20261121T150000/);
+  // ライブ
+  const l = block(`live-${live1}`);
+  assert.match(l, /DTSTART;TZID=Asia\/Tokyo:20261103T183000/);
+  assert.match(l, /SUMMARY:🎤 単独ライブ/);
+  assert.match(l, /LOCATION:新宿バティオス/);
+  assert.match(l, /DESCRIPTION:出演: アミダライン\\n開場 18:30 \/ 開演 19:00\\n料金: 前売 2\\,000円 \/ 当日 2\\,500円/);
+  assert.match(l, /STATUS:CONFIRMED/);
+  const l2 = block(`live-${live2}`);
+  assert.match(l2, /SUMMARY:【中止】🎤 中止ライブ/);
+  assert.match(l2, /DTSTART;VALUE=DATE:20261110/);
+  assert.match(l2, /STATUS:CANCELLED/);
+});

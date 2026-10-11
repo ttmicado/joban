@@ -34,8 +34,18 @@ export function fmtDay(date, { year = false } = {}) {
   return `${year ? `${y}/` : ""}${m}/${d}(${w})`;
 }
 
-const TYPE_LABEL = { game: "試合", practice: "練習", other: "予定" };
+const TYPE_LABEL = { game: "試合", practice: "練習", other: "予定", event: "イベント" };
 export const eventTypeLabel = (t) => TYPE_LABEL[t] || "予定";
+
+// 期間（合宿など複数日）: "11/14(土)〜11/15(日) 1泊2日"。end_date が無ければ "11/14(土)"
+export function fmtPeriod(date, endDate) {
+  if (!endDate || endDate <= date) return fmtDay(date);
+  const days = Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`)) / 86400000) + 1;
+  return `${fmtDay(date)}〜${fmtDay(endDate)} ${days - 1}泊${days}日`;
+}
+
+// 参加費: 0 → "無料"、15000 → "15,000円"
+export const fmtFee = (fee) => (fee === null || fee === undefined || fee === "" ? "" : Number(fee) === 0 ? "無料" : `${Number(fee).toLocaleString("ja-JP")}円`);
 
 // 文字列を LINE の制限内に収める
 export const clip = (s, n) => {
@@ -127,13 +137,14 @@ export function eventBubble(event, opts = {}) {
   const label = opts.label || `${eventTypeLabel(e.type)}のお知らせ`;
   const withOpponent = has(e.opponent) && !String(e.title || "").includes(e.opponent);
   const title = withOpponent ? `${e.title || eventTypeLabel(e.type)} vs ${e.opponent}` : e.title;
-  const when = [fmtDay(e.date), e.start_time ? `${e.start_time} 開始` : ""].filter(Boolean).join(" ");
+  const when = [fmtPeriod(e.date, e.end_date), e.start_time ? `${e.start_time} 開始` : ""].filter(Boolean).join(" ");
 
   const rows = [
-    infoRow("日付", fmtDay(e.date), { bold: true }),
+    infoRow(e.end_date && e.end_date > e.date ? "期間" : "日付", fmtPeriod(e.date, e.end_date), { bold: true }),
     infoRow("集合", [e.meet_time, e.meet_place].filter(has).join(" ") || null, { color: COLORS.greenDark, bold: true }),
     infoRow("開始", e.start_time),
-    infoRow("球場", e.venue),
+    infoRow(e.type === "game" || e.type === "practice" ? "球場" : "会場", e.venue),
+    infoRow("参加費", [fmtFee(e.fee), e.fee_note].filter(has).join(" ") || null),
     infoRow("持ち物", e.belongings),
     infoRow("締切", e.rsvp_deadline ? `${fmtDay(e.rsvp_deadline)} まで` : null),
   ];

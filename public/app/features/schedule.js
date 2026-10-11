@@ -1,5 +1,6 @@
 // 日程: 予定一覧・カレンダー・詳細と出欠・予定の作成編集・球場・日程調整・カレンダー連携
 import { appUrl, del, get, html, isAdmin, mount, navigate, on, patch, post, put, raw, setHeader } from "../core.js";
+import { fmtFee } from "../lib/flex.js";
 import {
   avatar,
   busy,
@@ -28,7 +29,16 @@ import {
 const TYPES = {
   game: { label: "試合", chip: "chip-green", icon: "⚾" },
   practice: { label: "練習", chip: "chip-blue", icon: "🏃" },
+  event: { label: "イベント", chip: "sch-chip-event", icon: "🎉" },
   other: { label: "その他", chip: "chip-purple", icon: "📌" },
+};
+// 一般メンバーが登録できる種類（サーバーの MEMBER_TYPES と同じ）
+const MEMBER_TYPES = ["event", "other"];
+// ライブ（lives 機能）の回答
+const LIVE_RSVP = {
+  go: { label: "行く", mark: "○", cls: "yes" },
+  maybe: { label: "迷い中", mark: "△", cls: "maybe" },
+  no: { label: "行けない", mark: "×", cls: "no" },
 };
 const RSVP = {
   yes: { label: "出席", mark: "○", cls: "yes" },
@@ -46,18 +56,89 @@ const addDays = (d, n) => {
   return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
 };
 const suggestTitle = (type, opponent) =>
-  type === "game" ? (opponent ? `vs ${opponent}` : "試合") : type === "practice" ? "練習" : "予定";
+  type === "game" ? (opponent ? `vs ${opponent}` : "試合") : type === "practice" ? "練習" : type === "event" ? "イベント" : "予定";
+const isField = (t) => t === "game" || t === "practice"; // 球場で行う予定
+const multiDay = (e) => !!e.end_date && e.end_date > e.date;
+const lastDay = (e) => (multiDay(e) ? e.end_date : e.date);
+const dayCount = (from, to) => daysFrom(to, from) + 1;
+// "11/14(土)〜11/15(日)" と "1泊2日"
+const periodText = (e) => (multiDay(e) ? `${fmtDate(e.date)}〜${fmtDate(e.end_date)}` : fmtDate(e.date));
+const nightsText = (e) => {
+  const n = dayCount(e.date, lastDay(e));
+  return n > 1 ? `${n - 1}泊${n}日` : "";
+};
+const feeText = (e) => {
+  const f = fmtFee(e.fee);
+  return f && e.fee_note ? `${f}（${e.fee_note}）` : f || e.fee_note || "";
+};
 
 const typeChip = (t) => html`<span class="chip ${typeOf(t).chip}">${typeOf(t).icon} ${typeOf(t).label}</span>`;
 
-function datebox(d) {
+function datebox(d, end = null) {
   const [, m, day] = d.split("-").map(Number);
-  return html`<div class="datebox sch-datebox"><p class="datebox-m">${m}月</p><p class="datebox-d">${day}</p><p class="datebox-w ${weekdayClass(d)}">${weekday(d)}</p></div>`;
+  const tail = end ? html`<p class="datebox-w sch-datebox-end">〜${end.slice(5, 7) === d.slice(5, 7) ? Number(end.slice(8)) : `${Number(end.slice(5, 7))}/${Number(end.slice(8))}`}</p>` : "";
+  return html`<div class="datebox sch-datebox ${end ? "multi" : ""}"><p class="datebox-m">${m}月</p><p class="datebox-d">${day}</p>${end ? tail : html`<p class="datebox-w ${weekdayClass(d)}">${weekday(d)}</p>`}</div>`;
 }
 
-// "今日！" "明日" "あと3日" "3日前"
-function countdown(date, today) {
+// ---------------------------------------------------------------- ライブ（lives 機能）も日程に並べる
+// lives の API が使えなくても日程は表示する（失敗は無視）
+async function loadLives(range) {
+  try {
+    const r = await get(range === "past" ? "/lives?range=past" : "/lives");
+    return Array.isArray(r?.lives) ? r.lives : [];
+  } catch {
+    return [];
+  }
+}
+
+const sortKey = (x) => `${x.date} ${x.kind === "live" ? x.openTime || x.startTime || "99:99" : x.meet_time || x.start_time || "99:99"}`;
+// 予定とライブを日付・時刻順に混ぜる
+function mergeItems(events, lives, { desc = false } = {}) {
+  const all = [...events.map((e) => ({ ...e, kind: "event" })), ...lives.map((l) => ({ ...l, kind: "live" }))];
+  all.sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0) * (desc ? -1 : 1));
+  return all;
+}
+
+function liveRow(l, today) {
+  const canceled = l.status === "canceled";
+  const n = daysFrom(l.date, today);
+  const my = l.my?.status ? LIVE_RSVP[l.my.status] : null;
+  const sub = [
+    l.openTime ? `開場 ${hm(l.openTime)}` : "",
+    l.startTime ? `開演 ${hm(l.startTime)}` : "",
+    l.venue || "",
+  ].filter(Boolean);
+  return html`<a class="list-item sch-item is-live ${canceled ? "is-canceled" : ""} t-live" href="#/lives/${l.id}">
+    ${datebox(l.date)}
+    <div class="list-main">
+      <div class="sch-chips">
+        <span class="chip sch-chip-live">🎤 ライブ</span>
+        ${canceled ? html`<span class="chip chip-red">中止</span>` : ""}
+        ${!canceled && n >= 0 && n <= 7 ? html`<span class="chip chip-amber">${countdown(l.date, today).label}</span>` : ""}
+      </div>
+      <p class="list-title sch-title">${l.title}</p>
+      ${sub.length ? html`<p class="list-sub ellipsis">${sub.join(" ・ ")}</p>` : ""}
+    </div>
+    <div class="sch-side">
+      ${canceled
+        ? ""
+        : my
+          ? html`<span class="sch-mark ${my.cls}" title="${my.label}">${my.mark}</span>`
+          : n >= 0
+            ? html`<span class="sch-mark none" title="未回答">未</span>`
+            : ""}
+      <span class="sch-live-my">${canceled ? "" : my ? my.label : n >= 0 ? "未回答" : ""}</span>
+      <span class="sch-yes"><b class="num">${l.counts?.go ?? 0}</b>人</span>
+    </div>
+  </a>`;
+}
+
+const itemRow = (x, today) => (x.kind === "live" ? liveRow(x, today) : eventRow(x, today));
+
+// "今日！" "明日" "あと3日" "3日前"（end を渡すと期間中は「開催中」）
+function countdown(date, today, end = null) {
   const n = daysFrom(date, today);
+  if (n < 0 && end && end >= today) return { big: "開催中", unit: "", label: "開催中", n: 0, ongoing: true };
   if (n === 0) return { big: "今日！", unit: "", label: "今日！", n };
   if (n === 1) return { big: "明日", unit: "", label: "明日", n };
   if (n > 0) return { pre: "あと", big: String(n), unit: "日", label: `あと${n}日`, n };
@@ -73,7 +154,9 @@ function countdownHtml(cd) {
 function gcalUrl(e) {
   const start = e.meet_time || e.start_time;
   let dates;
-  if (start) {
+  if (multiDay(e)) {
+    dates = `${e.date.replace(/-/g, "")}/${addDays(e.end_date, 1).replace(/-/g, "")}`;
+  } else if (start) {
     const s = `${e.date.replace(/-/g, "")}T${start.replace(":", "")}00`;
     let endDate = e.date;
     let end = e.end_time && e.end_time > start ? e.end_time : null;
@@ -91,6 +174,7 @@ function gcalUrl(e) {
     e.meet_time && `集合: ${hm(e.meet_time)}${e.meet_place ? `（${e.meet_place}）` : ""}`,
     e.start_time && `開始: ${hm(e.start_time)}`,
     e.opponent && `対戦相手: ${e.opponent}`,
+    feeText(e) && `参加費: ${feeText(e)}`,
     e.belongings && `持ち物: ${e.belongings}`,
     e.note,
     `出欠: ${appUrl(`/schedule/${e.id}`)}`,
@@ -113,11 +197,12 @@ function flexFor(e) {
       { type: "text", text: value, size: "sm", color: "#111111", wrap: true, flex: 6, weight: "bold" },
     ],
   });
-  const rows = [row("日付", fmtDate(e.date, { year: true }))];
+  const rows = [multiDay(e) ? row("期間", `${periodText(e)} ${nightsText(e)}`) : row("日付", fmtDate(e.date, { year: true }))];
   if (e.meet_time) rows.push(row("集合", `${hm(e.meet_time)}${e.meet_place ? ` ${e.meet_place}` : ""}`));
   if (e.start_time) rows.push(row("開始", hm(e.start_time) + (e.end_time ? `〜${hm(e.end_time)}` : "")));
-  if (e.venue) rows.push(row("球場", e.venue));
+  if (e.venue) rows.push(row(isField(e.type) ? "球場" : "会場", e.venue));
   if (e.opponent) rows.push(row("相手", e.opponent));
+  if (feeText(e)) rows.push(row("参加費", feeText(e)));
   if (e.belongings) rows.push(row("持ち物", e.belongings));
   const t = typeOf(e.type);
   return {
@@ -130,7 +215,7 @@ function flexFor(e) {
         layout: "vertical",
         spacing: "md",
         contents: [
-          { type: "text", text: `${t.icon} ${t.label}${e.status === "canceled" ? "（中止）" : ""}`, size: "xs", color: e.status === "canceled" ? "#ff5a5f" : "#128a52", weight: "bold" },
+          { type: "text", text: `${t.icon} ${t.label}${e.status === "canceled" ? "（中止）" : ""}`, size: "xs", color: e.status === "canceled" ? "#ff5a5f" : e.type === "event" ? "#d6336c" : "#128a52", weight: "bold" },
           { type: "text", text: e.title, size: "xl", weight: "bold", wrap: true },
           { type: "separator" },
           { type: "box", layout: "vertical", spacing: "sm", contents: rows },
@@ -158,65 +243,113 @@ async function loadVenues() {
   return venuesCache;
 }
 
+// 種類ごとのフォームの見せ方（data-for に書いた種類のときだけ表示）
+const FORM_TEXT = {
+  game: { title: "例: 練習試合・〇〇大会 1回戦", date: "日付", venue: "球場", venuePh: "球場名を入力", submit: "予定を追加する" },
+  practice: { title: "例: 全体練習・バッティング練習", date: "日付", venue: "球場", venuePh: "球場名を入力", submit: "予定を追加する" },
+  event: { title: "例: 夏合宿・納会・BBQ・飲み会", date: "開始日", venue: "会場", venuePh: "例: 高原ペンション・〇〇居酒屋", submit: "イベントを登録する" },
+  other: { title: "例: 総会・グラウンド整備", date: "開始日", venue: "会場", venuePh: "場所を入力", submit: "予定を追加する" },
+};
+
 async function openEventForm(e = null, { onSaved } = {}) {
-  const venues = await loadVenues().catch(() => []);
+  const admin = isAdmin();
+  const venues = admin ? await loadVenues().catch(() => []) : [];
   const isNew = !e;
-  const v = e || { type: "game", date: addDays(todayStr(), 7) };
+  const v = e || { type: admin ? "game" : "event", date: addDays(todayStr(), 7) };
   const val = (k) => v[k] ?? "";
+  // 一般メンバーはイベント・その他だけ選べる
+  const types = Object.entries(TYPES).filter(([k]) => admin || MEMBER_TYPES.includes(k));
+  const tx = FORM_TEXT[v.type] || FORM_TEXT.other;
+  const only = (list) => raw(`data-for="${list}" ${list.split(" ").includes(v.type) ? "" : "hidden"}`);
   sheet({
-    title: isNew ? "予定を追加" : "予定を編集",
-    body: html`<form class="form sch-form" novalidate>
-      ${isNew ? html`<button type="button" class="btn btn-ghost btn-sm sch-copy" data-act="copy-last">📋 前回の予定をコピー</button>` : ""}
+    title: isNew ? (admin ? "予定を追加" : "イベントを登録") : v.type === "event" ? "イベントを編集" : "予定を編集",
+    body: html`<form class="form sch-form t-${v.type}" novalidate>
+      ${isNew && admin ? html`<button type="button" class="btn btn-ghost btn-sm sch-copy" data-act="copy-last">📋 前回の予定をコピー</button>` : ""}
+      ${isNew && !admin ? html`<p class="sch-ev-lead">🎉 合宿・飲み会・BBQ・納会など、チームのイベントを誰でも登録できます。登録するとみんなが出欠を回答できます。</p>` : ""}
       <div class="field">
         <span class="field-label">種類</span>
-        <div class="sch-type-pick">
-          ${Object.entries(TYPES).map(
+        <div class="sch-type-pick ${types.length === 4 ? "cols-4" : "cols-2"}">
+          ${types.map(
             ([k, t]) => html`<label class="sch-type-opt ${k}"><input type="radio" name="type" value="${k}" ${v.type === k ? "checked" : ""} /><span>${t.icon} ${t.label}</span></label>`,
           )}
         </div>
       </div>
-      <div class="field"><label for="sf-opp">対戦相手</label><input id="sf-opp" class="input" name="opponent" maxlength="60" value="${val("opponent")}" placeholder="例: 北町タイガース" /></div>
-      <div class="field"><label for="sf-title">タイトル</label><input id="sf-title" class="input" name="title" maxlength="60" value="${val("title")}" placeholder="${suggestTitle(v.type, v.opponent)}" /><p class="hint">空欄なら「${suggestTitle(v.type, v.opponent)}」のように自動で付きます</p></div>
-      <div class="field"><label for="sf-date">日付</label><input id="sf-date" class="input" type="date" name="date" required value="${val("date")}" /></div>
+      <div class="field" ${only("game")}><label for="sf-opp">対戦相手</label><input id="sf-opp" class="input" name="opponent" maxlength="60" value="${val("opponent")}" placeholder="例: 北町タイガース" /></div>
+      <div class="field"><label for="sf-title">タイトル</label><input id="sf-title" class="input" name="title" maxlength="60" value="${val("title")}" placeholder="${tx.title}" /><p class="hint">空欄なら「${suggestTitle(v.type, v.opponent)}」のように自動で付きます</p></div>
+      <div class="grid-2 sch-dates">
+        <div class="field"><label for="sf-date" data-label="date">${tx.date}</label><input id="sf-date" class="input" type="date" name="date" required value="${val("date")}" /></div>
+        <div class="field" ${only("event other")}><label for="sf-end-date">終了日</label><input id="sf-end-date" class="input" type="date" name="end_date" value="${val("end_date")}" min="${val("date")}" /></div>
+      </div>
+      <p class="hint sch-period" ${only("event other")} data-period></p>
       <div class="grid-3">
         <div class="field"><label for="sf-meet">集合</label><input id="sf-meet" class="input sch-time" type="time" name="meet_time" value="${val("meet_time")}" /></div>
         <div class="field"><label for="sf-start">開始</label><input id="sf-start" class="input sch-time" type="time" name="start_time" value="${val("start_time")}" /></div>
         <div class="field"><label for="sf-end">終了</label><input id="sf-end" class="input sch-time" type="time" name="end_time" value="${val("end_time")}" /></div>
       </div>
-      <div class="field"><label for="sf-mp">集合場所</label><input id="sf-mp" class="input" name="meet_place" maxlength="100" value="${val("meet_place")}" placeholder="例: 球場の駐車場" /></div>
+      <div class="field"><label for="sf-mp">集合場所</label><input id="sf-mp" class="input" name="meet_place" maxlength="100" value="${val("meet_place")}" placeholder="例: 駅前ロータリー・球場の駐車場" /></div>
       <div class="field">
-        <label for="sf-venue">球場</label>
+        <label for="sf-venue" data-label="venue">${tx.venue}</label>
         ${venues.length
-          ? html`<select class="select" data-act="pick-venue" aria-label="球場マスタから選ぶ">
+          ? html`<select class="select" data-act="pick-venue" aria-label="球場マスタから選ぶ" ${only("game practice")}>
               <option value="">🏟 登録済みの球場から選ぶ…</option>
               ${venues.map((x) => html`<option value="${x.id}" ${x.name === v.venue ? "selected" : ""}>${x.name}</option>`)}
             </select>`
           : ""}
-        <input id="sf-venue" class="input" name="venue" maxlength="100" value="${val("venue")}" placeholder="球場名を入力" />
+        <input id="sf-venue" class="input" name="venue" maxlength="100" value="${val("venue")}" placeholder="${tx.venuePh}" />
       </div>
-      <div class="field"><label for="sf-url">地図URL</label><input id="sf-url" class="input" type="url" name="venue_url" value="${val("venue_url")}" placeholder="https://maps.app.goo.gl/…（空なら球場名で検索）" /></div>
-      <div class="field"><label for="sf-bel">持ち物</label><textarea id="sf-bel" class="textarea sch-short" name="belongings" maxlength="500" placeholder="例: ユニフォーム上下・スパイク・水筒">${val("belongings")}</textarea></div>
-      <div class="field"><label for="sf-note">メモ</label><textarea id="sf-note" class="textarea sch-short" name="note" maxlength="2000" placeholder="雨天時の連絡、駐車場など">${val("note")}</textarea></div>
+      <div class="field"><label for="sf-url">地図URL</label><input id="sf-url" class="input" type="url" name="venue_url" value="${val("venue_url")}" placeholder="https://maps.app.goo.gl/…（空なら場所の名前で検索）" /></div>
+      <div class="grid-2 sch-fee" ${only("event other")}>
+        <div class="field"><label for="sf-fee">参加費（円）</label><input id="sf-fee" class="input" type="number" inputmode="numeric" min="0" max="1000000" step="1" name="fee" value="${val("fee")}" placeholder="例: 15000" /></div>
+        <div class="field"><label for="sf-fee-note">参加費のメモ</label><input id="sf-fee-note" class="input" name="fee_note" maxlength="100" value="${val("fee_note")}" placeholder="例: 宿泊・食事込み" /></div>
+      </div>
+      <div class="field"><label for="sf-bel">持ち物</label><textarea id="sf-bel" class="textarea sch-short" name="belongings" maxlength="500" placeholder="${v.type === "event" ? "例: 着替え・タオル・グローブ" : "例: ユニフォーム上下・スパイク・水筒"}">${val("belongings")}</textarea></div>
+      <div class="field"><label for="sf-note">メモ</label><textarea id="sf-note" class="textarea sch-short" name="note" maxlength="2000" placeholder="${v.type === "event" ? "スケジュール・部屋割り・幹事の連絡先など" : "雨天時の連絡、駐車場など"}">${val("note")}</textarea></div>
       <div class="field"><label for="sf-dl">出欠締切</label><input id="sf-dl" class="input" type="date" name="rsvp_deadline" value="${val("rsvp_deadline")}" /></div>
-      <button class="btn btn-primary btn-block" type="submit">${isNew ? "予定を追加する" : "保存する"}</button>
+      <button class="btn btn-primary btn-block" type="submit">${isNew ? tx.submit : "保存する"}</button>
     </form>`,
     onMount(el, close) {
       const form = el.querySelector("form");
       const f = (n) => form.elements[n];
+      const curType = () => form.querySelector("input[name=type]:checked")?.value || v.type;
       let lastSuggest = suggestTitle(v.type, v.opponent);
       const refreshSuggest = () => {
-        const type = form.querySelector("input[name=type]:checked")?.value || "game";
-        const s = suggestTitle(type, f("opponent").value.trim());
-        f("title").placeholder = s;
+        const s = suggestTitle(curType(), f("opponent").value.trim());
         if (f("title").value === lastSuggest) f("title").value = "";
         lastSuggest = s;
         el.querySelector(".sch-form .hint").textContent = `空欄なら「${s}」のように自動で付きます`;
       };
+      // 期間の表示（11/14(土)〜11/15(日) 1泊2日）
+      const refreshPeriod = () => {
+        const p = el.querySelector("[data-period]");
+        const d = f("date").value;
+        const end = f("end_date").value;
+        f("end_date").min = d || "";
+        if (!d) return void (p.textContent = "");
+        if (!end || end <= d) return void (p.textContent = "1日だけなら終了日は空欄でOK");
+        p.textContent = `📅 ${periodText({ date: d, end_date: end })} ${nightsText({ date: d, end_date: end })}`;
+      };
+      // 種類で項目を出し分け
+      const refreshType = () => {
+        const type = curType();
+        const t = FORM_TEXT[type] || FORM_TEXT.other;
+        form.className = `form sch-form t-${type}`;
+        for (const x of form.querySelectorAll("[data-for]")) x.hidden = !x.dataset.for.split(" ").includes(type);
+        f("title").placeholder = t.title;
+        el.querySelector("[data-label=date]").textContent = t.date;
+        el.querySelector("[data-label=venue]").textContent = t.venue;
+        f("venue").placeholder = t.venuePh;
+        if (isNew) form.querySelector("[type=submit]").textContent = t.submit;
+        refreshSuggest();
+        refreshPeriod();
+      };
+      refreshPeriod();
       form.addEventListener("input", (ev) => {
-        if (ev.target.name === "opponent" || ev.target.name === "type") refreshSuggest();
+        if (ev.target.name === "opponent") refreshSuggest();
+        if (ev.target.name === "date" || ev.target.name === "end_date") refreshPeriod();
       });
       form.addEventListener("change", (ev) => {
-        if (ev.target.name === "type") refreshSuggest();
+        if (ev.target.name === "type") refreshType();
+        if (ev.target.name === "date" || ev.target.name === "end_date") refreshPeriod();
         if (ev.target.dataset.act === "pick-venue") {
           const x = venues.find((x) => String(x.id) === ev.target.value);
           if (x) {
@@ -227,16 +360,16 @@ async function openEventForm(e = null, { onSaved } = {}) {
       });
       form.querySelector("[data-act=copy-last]")?.addEventListener("click", (ev) =>
         busy(ev.currentTarget, async () => {
-          const type = form.querySelector("input[name=type]:checked")?.value || "game";
+          const type = curType();
           let { event: last } = await get(`/events/latest?type=${type}`);
           if (!last) ({ event: last } = await get("/events/latest"));
           if (!last) return toast("コピーできる予定がまだありません");
-          for (const k of ["meet_time", "start_time", "end_time", "meet_place", "venue", "venue_url", "opponent", "belongings", "note"]) {
-            f(k).value = last[k] || "";
+          for (const k of ["meet_time", "start_time", "end_time", "meet_place", "venue", "venue_url", "opponent", "belongings", "note", "fee", "fee_note"]) {
+            f(k).value = last[k] ?? "";
           }
           form.querySelector(`input[name=type][value=${last.type}]`).checked = true;
           f("title").value = last.title === suggestTitle(last.type, last.opponent) ? "" : last.title;
-          refreshSuggest();
+          refreshType();
           const sel = form.querySelector("[data-act=pick-venue]");
           if (sel) sel.value = venues.find((x) => x.name === last.venue)?.id ?? "";
           toast(`「${last.title}」(${fmtDate(last.date)}) の内容をコピーしました`, { type: "success" });
@@ -246,10 +379,16 @@ async function openEventForm(e = null, { onSaved } = {}) {
         ev.preventDefault();
         busy(form.querySelector("[type=submit]"), async () => {
           const body = readForm(form);
-          if (!body.date) throw new Error("日付を入力してください");
+          const type = body.type || v.type;
+          if (!body.date) throw new Error(type === "event" ? "開始日を入力してください" : "日付を入力してください");
+          // 隠れている項目は送らない（種類を変えたときに前の入力が残らないように空にする）
+          for (const x of form.querySelectorAll("[data-for]")) {
+            if (!x.dataset.for.split(" ").includes(type)) for (const i of x.querySelectorAll("[name]")) body[i.name] = i.type === "number" ? null : "";
+          }
+          if (body.end_date && body.end_date < body.date) throw new Error("終了日は開始日以降にしてください");
           const res = isNew ? await post("/events", body) : await patch(`/events/${e.id}`, body);
           close();
-          toast(isNew ? "予定を追加しました！" : "保存しました", { type: "success" });
+          toast(isNew ? (type === "event" ? "イベントを登録しました！🎉" : "予定を追加しました！") : "保存しました", { type: "success" });
           onSaved?.(res.event);
         });
       });
@@ -260,7 +399,8 @@ async function openEventForm(e = null, { onSaved } = {}) {
 // ---------------------------------------------------------------- 予定一覧
 function eventRow(e, today) {
   const canceled = e.status === "canceled";
-  const n = daysFrom(e.date, today);
+  const cd = countdown(e.date, today, lastDay(e));
+  const n = cd.n;
   const my = e.my_status ? RSVP[e.my_status] : null;
   const sub = [
     e.opponent && e.type === "game" && !e.title.includes(e.opponent) ? `vs ${e.opponent}` : "",
@@ -268,15 +408,17 @@ function eventRow(e, today) {
     e.venue || "",
   ].filter(Boolean);
   return html`<a class="list-item sch-item ${canceled ? "is-canceled" : ""} t-${e.type}" href="#/schedule/${e.id}">
-    ${datebox(e.date)}
+    ${datebox(e.date, multiDay(e) ? e.end_date : null)}
     <div class="list-main">
       <div class="sch-chips">
         ${typeChip(e.type)}
         ${canceled ? html`<span class="chip chip-red">中止</span>` : ""}
-        ${!canceled && n >= 0 && n <= 7 ? html`<span class="chip chip-amber">${countdown(e.date, today).label}</span>` : ""}
+        ${!canceled && n >= 0 && n <= 7 ? html`<span class="chip chip-amber">${cd.label}</span>` : ""}
       </div>
       <p class="list-title sch-title">${e.title}</p>
+      ${multiDay(e) ? html`<p class="list-sub sch-period-sub">📅 ${periodText(e)} <b>${nightsText(e)}</b></p>` : ""}
       ${sub.length ? html`<p class="list-sub ellipsis">${sub.join(" ・ ")}</p>` : ""}
+      ${feeText(e) ? html`<p class="list-sub ellipsis sch-fee-sub">💴 ${feeText(e)}</p>` : ""}
     </div>
     <div class="sch-side">
       ${canceled
@@ -313,22 +455,30 @@ async function renderList(view, { query }) {
   let body;
   if (mode === "cal") {
     const month = /^\d{4}-\d{2}$/.test(query.month || "") ? query.month : todayStr().slice(0, 7);
-    const data = await get(`/events?range=month&month=${month}`);
-    body = calendarView(data, query.day);
+    const today = todayStr();
+    // ライブは「これから」「過去」の API しかないので、表示する月に必要なほうを取って絞り込む
+    const [data, upLives, pastLives] = await Promise.all([
+      get(`/events?range=month&month=${month}`),
+      `${month}-31` >= today ? loadLives("upcoming") : [],
+      `${month}-01` < today ? loadLives("past") : [],
+    ]);
+    const lives = [...upLives, ...pastLives].filter((l) => l.date?.startsWith(month));
+    body = calendarView({ ...data, items: mergeItems(data.events, lives) }, query.day);
   } else {
-    const data = await get(`/events?range=${mode}`);
-    const groups = groupByMonth(data.events);
-    body = data.events.length
+    const [data, lives] = await Promise.all([get(`/events?range=${mode}`), loadLives(mode)]);
+    const items = mergeItems(data.events, lives, { desc: mode === "past" });
+    const groups = groupByMonth(items);
+    body = items.length
       ? groups.map(
           (g) => html`<p class="section-title">${monthLabel(g.key)}<span class="dim">${g.items.length}件</span></p>
-            <div class="list">${g.items.map((e) => eventRow(e, data.today))}</div>`,
+            <div class="list">${g.items.map((x) => itemRow(x, data.today))}</div>`,
         )
       : mode === "upcoming"
-        ? empty(html`これからの予定はまだありません。<br />次の試合、決めちゃいましょう！`, {
+        ? empty(html`これからの予定はまだありません。<br />${admin ? "次の試合、決めちゃいましょう！" : "合宿や飲み会、企画してみませんか？"}`, {
             icon: "📅",
             action: admin
               ? html`<button class="btn btn-primary" data-act="new-event">＋ 予定を追加</button>`
-              : html`<a class="btn" href="#/polls">🗳 日程調整を見る</a>`,
+              : html`<button class="btn btn-primary" data-act="new-event">🎉 イベントを登録</button>`,
           })
         : empty("過去の予定はまだありません", { icon: "📖" });
   }
@@ -343,7 +493,7 @@ async function renderList(view, { query }) {
         <a class="sch-sc" href="#/calendar">🔗 カレンダー連携</a>
       </nav>
       ${body}
-      ${admin ? fab({ label: "予定を追加", short: "予定", act: "new-event" }) : ""}`,
+      ${admin ? fab({ label: "予定を追加", short: "予定", act: "new-event" }) : fab({ label: "イベントを登録", short: "イベント", icon: "🎉", act: "new-event" })}`,
   );
 
   const offs = [
@@ -360,22 +510,32 @@ async function renderList(view, { query }) {
       box.querySelector("[data-day-title]").textContent = fmtDate(b.dataset.day);
     }),
   ];
-  if (query.new === "1" && admin) openNew();
+  if (query.new === "1") openNew();
   return () => offs.forEach((f) => f());
 }
 
-function calendarView({ events, month, today }, day) {
+function calendarView({ items, month, today }, day) {
+  const events = items;
   const [y, m] = month.split("-").map(Number);
   const first = new Date(y, m - 1, 1).getDay();
   const days = new Date(y, m, 0).getDate();
   const prev = m === 1 ? `${y - 1}-12` : `${y}-${pad(m - 1)}`;
   const next = m === 12 ? `${y + 1}-01` : `${y}-${pad(m + 1)}`;
+  // 合宿など複数日の予定は期間中の毎日に点を付ける
   const byDay = new Map();
+  const daysOf = (e) => {
+    if (e.kind === "live" || !multiDay(e)) return [e.date];
+    const out = [];
+    for (let d = e.date; d <= e.end_date && out.length < 40; d = addDays(d, 1)) out.push(d);
+    return out;
+  };
   for (const e of events) {
-    if (!byDay.has(e.date)) byDay.set(e.date, []);
-    byDay.get(e.date).push(e);
+    for (const d of daysOf(e)) {
+      if (!byDay.has(d)) byDay.set(d, []);
+      byDay.get(d).push(e);
+    }
   }
-  let selected = day && day.startsWith(month) ? day : today.startsWith(month) ? today : events[0]?.date || `${month}-01`;
+  let selected = day && day.startsWith(month) ? day : today.startsWith(month) ? today : [...byDay.keys()].filter((d) => d.startsWith(month)).sort()[0] || `${month}-01`;
   const cells = [];
   for (let i = 0; i < first; i++) cells.push(html`<span class="sch-cell blank"></span>`);
   for (let d = 1; d <= days; d++) {
@@ -383,7 +543,7 @@ function calendarView({ events, month, today }, day) {
     const list = byDay.get(date) || [];
     cells.push(html`<button type="button" class="sch-cell ${weekdayClass(date)} ${date === today ? "today" : ""} ${date === selected ? "selected" : ""} ${list.length ? "has" : ""} ${date < today ? "past" : ""}" data-day="${date}" aria-label="${fmtDate(date)} ${list.length}件">
       <span class="sch-cell-d num">${d}</span>
-      <span class="sch-dots">${list.slice(0, 3).map((e) => html`<i class="t-${e.type} ${e.status === "canceled" ? "x" : ""}"></i>`)}</span>
+      <span class="sch-dots">${list.slice(0, 3).map((e) => html`<i class="t-${e.kind === "live" ? "live" : e.type} ${e.status === "canceled" ? "x" : ""}"></i>`)}</span>
     </button>`);
   }
   const sel = byDay.get(selected) || [];
@@ -395,12 +555,12 @@ function calendarView({ events, month, today }, day) {
       </div>
       <div class="sch-grid sch-week">${["日", "月", "火", "水", "木", "金", "土"].map((w, i) => html`<span class="${i === 0 ? "sun" : i === 6 ? "sat" : ""}">${w}</span>`)}</div>
       <div class="sch-grid">${cells}</div>
-      <div class="sch-legend"><span><i class="t-game"></i>試合</span><span><i class="t-practice"></i>練習</span><span><i class="t-other"></i>その他</span><span class="dim">この月 ${events.length}件</span></div>
+      <div class="sch-legend"><span><i class="t-game"></i>試合</span><span><i class="t-practice"></i>練習</span><span><i class="t-event"></i>イベント</span><span><i class="t-live"></i>ライブ</span><span><i class="t-other"></i>その他</span><span class="dim">この月 ${events.length}件</span></div>
     </div>
     <div data-day-list="${selected}" class="stack">
       <p class="section-title" data-day-title>${fmtDate(selected)}</p>
       <div class="list">
-        ${events.map((e) => html`<div data-date="${e.date}" ${e.date === selected ? "" : "hidden"}>${eventRow(e, today)}</div>`)}
+        ${events.flatMap((e) => daysOf(e).filter((d) => d.startsWith(month)).map((d) => html`<div data-date="${d}" ${d === selected ? "" : "hidden"}>${itemRow(e, today)}</div>`))}
       </div>
       <p class="sch-day-empty muted small center" data-day-empty ${sel.length ? "hidden" : ""}>この日の予定はありません ⚾</p>
     </div>`;
@@ -471,21 +631,26 @@ function rsvpButtons(current, { compact = false, attr = "data-rsvp" } = {}) {
 function detailHtml(d, admin) {
   const e = d.event;
   const canceled = e.status === "canceled";
-  const cd = countdown(e.date, d.today);
+  const cd = countdown(e.date, d.today, lastDay(e));
   const past = cd.n < 0;
   const deadlinePassed = e.rsvp_deadline && e.rsvp_deadline < d.today;
   const map = mapLink(e, d.venue);
+  const canEdit = d.can_edit ?? admin;
+  const fee = feeText(e);
+  const multi = multiDay(e);
   const times = [
     ["集合", e.meet_time, "meet"],
     ["開始", e.start_time, ""],
-    ["終了", e.end_time, ""],
+    [multi ? "最終日 終了" : "終了", e.end_time, ""],
   ].filter(([, t]) => t);
   return html`<section class="card card-hero sch-hero t-${e.type} ${canceled ? "is-canceled" : ""}">
       <div class="row gap wrap">${typeChip(e.type)}${canceled ? html`<span class="chip chip-red">中止</span>` : ""}${d.game_id ? html`<span class="chip chip-amber">結果あり</span>` : ""}</div>
       <div class="sch-hero-top">
         <div class="sch-hero-main">
           <h2 class="sch-hero-title">${e.title}</h2>
-          <p class="sch-hero-date"><span class="num">${fmtDate(e.date, { year: true })}</span></p>
+          ${multiDay(e)
+            ? html`<p class="sch-hero-date sch-hero-period"><span class="num">${periodText(e)}</span><span class="chip sch-nights">${nightsText(e)}</span></p>`
+            : html`<p class="sch-hero-date"><span class="num">${fmtDate(e.date, { year: true })}</span></p>`}
         </div>
         ${canceled ? "" : html`<div class="sch-cd ${cd.n === 0 ? "today" : ""} ${past ? "past" : ""}">${countdownHtml(cd)}</div>`}
       </div>
@@ -496,12 +661,13 @@ function detailHtml(d, admin) {
             )}
           </div>`
         : html`<p class="muted small">時間は未定です</p>`}
+      ${fee ? html`<div class="sch-fee-box"><p class="sch-time-label">💴 参加費</p><p class="sch-fee-val">${fmtFee(e.fee) ? html`<span class="num">${fmtFee(e.fee)}</span>` : ""}${e.fee_note ? html`<span class="sch-fee-note">${e.fee_note}</span>` : ""}</p></div>` : ""}
     </section>
 
     <section class="list sch-info">
       ${e.meet_place ? html`<div class="list-item"><span class="sch-ic">📍</span><div class="list-main"><p class="list-sub">集合場所</p><p class="list-title">${e.meet_place}</p></div></div>` : ""}
       ${e.venue
-        ? html`<div class="list-item"><span class="sch-ic">🏟</span><div class="list-main"><p class="list-sub">球場</p><p class="list-title">${e.venue}</p>
+        ? html`<div class="list-item"><span class="sch-ic">${isField(e.type) ? "🏟" : "🏠"}</span><div class="list-main"><p class="list-sub">${isField(e.type) ? "球場" : "会場"}</p><p class="list-title">${e.venue}</p>
             ${d.venue?.address ? html`<p class="list-sub">${d.venue.address}</p>` : ""}
             ${d.venue?.note ? html`<p class="sch-venue-note">🅿 ${multiline(d.venue.note)}</p>` : ""}</div>
             <a class="btn btn-sm" href="${map}" target="_blank" rel="noopener">🗺 地図</a></div>`
@@ -510,6 +676,7 @@ function detailHtml(d, admin) {
       ${e.belongings ? html`<div class="list-item"><span class="sch-ic">🎒</span><div class="list-main"><p class="list-sub">持ち物</p><p class="sch-text">${multiline(e.belongings)}</p></div></div>` : ""}
       ${e.note ? html`<div class="list-item"><span class="sch-ic">📝</span><div class="list-main"><p class="list-sub">メモ</p><p class="sch-text">${multiline(e.note)}</p></div></div>` : ""}
       ${!e.meet_place && !e.venue && !e.opponent && !e.belongings && !e.note ? html`<div class="list-item"><span class="sch-ic">📝</span><p class="muted small">詳細はまだ入っていません</p></div>` : ""}
+      ${d.creator && !isField(e.type) ? html`<div class="list-item sch-creator">${avatar(d.creator, "xs")}<p class="list-sub">登録: <b>${d.creator.name}</b> さん</p></div>` : ""}
     </section>
 
     ${canceled
@@ -539,9 +706,9 @@ function detailHtml(d, admin) {
       <a class="btn btn-block" href="${gcalUrl(e)}" target="_blank" rel="noopener">📆 Googleカレンダーに追加</a>
     </section>
 
-    ${admin
+    ${canEdit
       ? html`<section class="sch-admin">
-          <p class="section-title">管理者メニュー</p>
+          <p class="section-title">${admin ? "管理者メニュー" : "登録した人のメニュー"}</p>
           <div class="grid-3">
             <button type="button" class="btn" data-act="edit">✏️ 編集</button>
             ${canceled
@@ -604,7 +771,7 @@ async function renderDetail(view, { params }) {
   setHeader({ title: "予定", back: "/schedule" });
   let d = await get(`/events/${encodeURIComponent(params.id)}`);
   const draw = (first = false) => {
-    setHeader({ title: typeOf(d.event.type).label + "の予定", back: "/schedule" });
+    setHeader({ title: d.event.type === "event" ? "イベント" : typeOf(d.event.type).label + "の予定", back: "/schedule" });
     mount(view, detailHtml(d, admin));
     if (first) countUp(view);
   };
@@ -1144,11 +1311,11 @@ function nextCardHtml(d) {
       <p class="sch-next-empty">次の予定はまだありません。<br />グラウンドが待ってるぞ！⚾</p>
       ${admin
         ? html`<div class="row gap"><a class="btn btn-primary grow" href="#/schedule?new=1">＋ 予定を追加</a><a class="btn grow" href="#/polls">🗳 日程調整</a></div>`
-        : html`<a class="btn btn-block" href="#/polls">🗳 日程調整を見る</a>`}
+        : html`<div class="row gap"><a class="btn btn-primary grow" href="#/schedule?new=1">🎉 イベント登録</a><a class="btn grow" href="#/polls">🗳 日程調整</a></div>`}
     </section>`;
   }
   const e = d.event;
-  const cd = countdown(e.date, d.today);
+  const cd = countdown(e.date, d.today, lastDay(e));
   const yesList = d.attendance.filter((a) => a.status === "yes");
   const map = mapLink(e, d.venue);
   const deadlinePassed = e.rsvp_deadline && e.rsvp_deadline < d.today;
@@ -1164,7 +1331,7 @@ function nextCardHtml(d) {
       <div class="sch-cd big ${cd.n === 0 ? "today" : ""}">${countdownHtml(cd)}</div>
       <div class="sch-next-body">
         <p class="sch-next-title">${e.title}</p>
-        <p class="sch-next-date num">${fmtDate(e.date)}</p>
+        <p class="sch-next-date num">${periodText(e)}${multiDay(e) ? html` <span class="sch-nights chip">${nightsText(e)}</span>` : ""}</p>
       </div>
       <span class="chev">›</span>
     </a>
@@ -1175,9 +1342,10 @@ function nextCardHtml(d) {
           ? html`<div><p class="sch-time-label">開始</p><p class="num sch-next-time">${hm(e.start_time)}</p></div>`
           : ""}
       ${e.venue
-        ? html`<a class="sch-next-venue" href="${map}" target="_blank" rel="noopener"><p class="sch-time-label">球場 🗺</p><p class="ellipsis">${e.venue}</p></a>`
+        ? html`<a class="sch-next-venue" href="${map}" target="_blank" rel="noopener"><p class="sch-time-label">${isField(e.type) ? "球場" : "会場"} 🗺</p><p class="ellipsis">${e.venue}</p></a>`
         : ""}
     </div>
+    ${feeText(e) ? html`<p class="sch-next-fee small">💴 参加費 <b>${feeText(e)}</b></p>` : ""}
     ${gameDay && d.game_id
       ? html`<div class="row gap"><a class="btn btn-amber grow" href="#/games/${d.game_id}">📊 試合速報</a><a class="btn grow" href="#/games/${d.game_id}?tab=lineup">📋 スタメン</a></div>`
       : ""}
@@ -1193,7 +1361,7 @@ async function pendingCardHtml() {
   const p = await get("/events/pending");
   if (!p.count) return "";
   const items = [
-    ...p.events.map((e) => ({ href: `#/schedule/${e.id}`, icon: typeOf(e.type).icon, title: e.title, sub: `${fmtDate(e.date)}${e.rsvp_deadline ? ` ・ 締切 ${fmtDate(e.rsvp_deadline)}` : ""}` })),
+    ...p.events.map((e) => ({ href: `#/schedule/${e.id}`, icon: typeOf(e.type).icon, title: e.title, sub: `${periodText(e)}${e.rsvp_deadline ? ` ・ 締切 ${fmtDate(e.rsvp_deadline)}` : ""}` })),
     ...p.polls.map((x) => ({ href: `#/polls/${x.id}`, icon: "🗳", title: x.title, sub: `日程調整${x.deadline ? ` ・ 締切 ${fmtDate(x.deadline)}` : ""}` })),
   ];
   return html`<section class="card sch-pending" data-todo="${p.count}">

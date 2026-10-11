@@ -430,6 +430,7 @@ async function sendTest(c) {
 // ---------------------------------------------------------------- イベント購読
 const CHANGE_FIELDS = [
   ["date", "日付", (v) => fmtDay(v)],
+  ["end_date", "最終日", (v) => (v ? fmtDay(v) : "なし")],
   ["meet_time", "集合", (v) => v],
   ["meet_place", "集合場所", (v) => v],
   ["start_time", "開始", (v) => v],

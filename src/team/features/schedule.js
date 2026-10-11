@@ -1,12 +1,16 @@
 // 日程（予定・出欠）・球場マスタ・日程調整・カレンダー購読（ics）
 import { raw } from "../app.js";
-import { badRequest, conflict, notFound } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { addDays } from "../time.js";
 import { v } from "../validate.js";
 import { publicMember } from "./members.js";
 
-const TYPES = ["game", "practice", "other"];
-const TYPE_LABEL = { game: "試合", practice: "練習", other: "その他" };
+const TYPES = ["game", "practice", "other", "event"];
+const TYPE_LABEL = { game: "試合", practice: "練習", other: "その他", event: "イベント" };
+// 一般メンバーが登録できる種類（合宿・飲み会などのイベント）。試合・練習は管理者だけ
+const MEMBER_TYPES = ["event", "other"];
+const MAX_DAYS = 31; // 複数日の予定の最大日数
+const MAX_FEE = 1000000; // 参加費の上限（円）
 const RSVP = ["yes", "maybe", "no"];
 
 // ---------------------------------------------------------------- 予定
@@ -21,6 +25,7 @@ async function getEvent(db, id) {
 export function suggestTitle(type, opponent) {
   if (type === "game") return opponent ? `vs ${opponent}` : "試合";
   if (type === "practice") return "練習";
+  if (type === "event") return "イベント";
   return "予定";
 }
 
@@ -31,6 +36,7 @@ function eventFields(body, { partial = false } = {}) {
   if (has("type")) f.type = v.oneOf(body.type || (partial ? undefined : "game"), "種類", TYPES, { required: true });
   if (has("title")) f.title = v.str(body.title, "タイトル", { max: 60 });
   if (has("date")) f.date = v.date(body.date, "日付", { required: true });
+  if (has("end_date")) f.end_date = v.date(body.end_date, "最終日");
   if (has("meet_time")) f.meet_time = v.time(body.meet_time, "集合時間");
   if (has("start_time")) f.start_time = v.time(body.start_time, "開始時間");
   if (has("end_time")) f.end_time = v.time(body.end_time, "終了時間");
@@ -41,26 +47,53 @@ function eventFields(body, { partial = false } = {}) {
   if (has("belongings")) f.belongings = v.str(body.belongings, "持ち物", { max: 500 });
   if (has("note")) f.note = v.str(body.note, "メモ", { max: 2000 });
   if (has("rsvp_deadline")) f.rsvp_deadline = v.date(body.rsvp_deadline, "出欠締切");
+  if (has("fee")) f.fee = v.int(body.fee, "参加費", { min: 0, max: MAX_FEE });
+  if (has("fee_note")) f.fee_note = v.str(body.fee_note, "参加費のメモ", { max: 100 });
   return f;
 }
 
+// 日数（"2026-11-14"〜"2026-11-15" → 2）
+const dayCount = (from, to) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1;
+
 function checkEvent(e) {
-  if (e.start_time && e.end_time && e.end_time < e.start_time) throw badRequest("終了時間は開始時間より後にしてください");
+  if (e.end_date) {
+    if (e.end_date < e.date) throw badRequest("最終日は開始日以降の日付にしてください");
+    if (e.end_date === e.date) e.end_date = null; // 1日だけなら最終日なし
+    else if (dayCount(e.date, e.end_date) > MAX_DAYS) throw badRequest(`期間は${MAX_DAYS}日以内にしてください`);
+  }
+  // 複数日の予定は終了時間が最終日の時刻なので、開始時間より前でもよい
+  if (!e.end_date && e.start_time && e.end_time && e.end_time < e.start_time) throw badRequest("終了時間は開始時間より後にしてください");
   if (e.meet_time && e.start_time && e.start_time < e.meet_time) throw badRequest("開始時間は集合時間より後にしてください");
   if (e.rsvp_deadline && e.rsvp_deadline > e.date) throw badRequest("出欠締切は予定日までの日付にしてください");
   if (!e.title) e.title = suggestTitle(e.type, e.opponent);
+}
+
+// 編集・中止・削除できるか: 管理者は全部、一般メンバーは自分が登録したイベント（その他）だけ
+export function canEditEvent(c, e) {
+  if (c.isAdmin) return true;
+  return !!c.member && e.created_by !== null && e.created_by !== undefined && Number(e.created_by) === Number(c.member.id) && MEMBER_TYPES.includes(e.type);
+}
+
+function requireCanEdit(c, e) {
+  if (!canEditEvent(c, e)) throw forbidden("この予定を変更できるのは管理者か登録した人だけです");
+}
+
+// 一般メンバーが登録・変更できる種類か
+function requireTypeAllowed(c, type) {
+  if (!c.isAdmin && !MEMBER_TYPES.includes(type)) throw forbidden("試合・練習の登録は管理者だけができます。イベントとして登録してください");
 }
 
 async function insertEvent(c, f) {
   const e = { type: "game", title: null, ...f };
   checkEvent(e);
   const { lastId } = await c.db.run(
-    `INSERT INTO events(type, title, date, meet_time, start_time, end_time, venue, venue_url, meet_place, opponent,
-       belongings, note, rsvp_deadline, created_by, created_at, updated_at)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events(type, title, date, end_date, meet_time, start_time, end_time, venue, venue_url, meet_place, opponent,
+       belongings, note, rsvp_deadline, fee, fee_note, created_by, created_at, updated_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     e.type,
     e.title,
     e.date,
+    e.end_date ?? null,
     e.meet_time ?? null,
     e.start_time ?? null,
     e.end_time ?? null,
@@ -71,6 +104,8 @@ async function insertEvent(c, f) {
     e.belongings ?? null,
     e.note ?? null,
     e.rsvp_deadline ?? null,
+    e.fee ?? null,
+    e.fee_note ?? null,
     c.member?.id ?? null,
     c.now.ts,
     c.now.ts,
@@ -106,7 +141,14 @@ async function listEvents(c, where, params, order, limit = 200) {
       if (!games.has(g.event_id)) games.set(g.event_id, g.id);
     }
   }
-  return rows.map((r) => ({ ...r, counts: counts.get(r.id), my_status: mine.get(r.id) || null, game_id: games.get(r.id) || null }));
+  return rows.map((r) => ({
+    ...r,
+    counts: counts.get(r.id),
+    my_status: mine.get(r.id) || null,
+    game_id: games.get(r.id) || null,
+    days: r.end_date ? dayCount(r.date, r.end_date) : 1,
+    can_edit: canEditEvent(c, r),
+  }));
 }
 
 const activeRoster = async (db) =>
@@ -133,13 +175,16 @@ async function eventDetail(c, id) {
   const mine = att.get(c.member.id);
   const game = await c.db.one("SELECT id FROM games WHERE event_id = ? ORDER BY id LIMIT 1", event.id);
   const venue = event.venue ? await c.db.one("SELECT * FROM venues WHERE name = ?", event.venue) : null;
+  const creator = event.created_by ? await c.db.one("SELECT * FROM members WHERE id = ?", event.created_by) : null;
   return {
-    event: { ...event, counts },
+    event: { ...event, counts, days: event.end_date ? dayCount(event.date, event.end_date) : 1 },
     attendance,
     unanswered,
     my: mine ? { status: mine.status, comment: mine.comment || "" } : null,
     game_id: game?.id || null,
     venue,
+    creator: creator ? publicMember(creator) : null,
+    can_edit: canEditEvent(c, event),
     today: c.now.date,
   };
 }
@@ -151,7 +196,7 @@ async function setRsvp(c) {
   const target = await c.db.one("SELECT * FROM members WHERE id = ? AND active = 1", memberId);
   if (!target) throw notFound("メンバーが見つかりません");
   if (event.status === "canceled") throw badRequest("この予定は中止になりました");
-  if (!c.isAdmin && event.date < c.now.date) throw badRequest("終わった予定の出欠は変更できません");
+  if (!c.isAdmin && (event.end_date || event.date) < c.now.date) throw badRequest("終わった予定の出欠は変更できません");
   const comment = v.str(c.body.comment, "コメント", { max: 100 });
   if (c.body.status === null || c.body.status === "" || c.body.status === "none") {
     await c.db.run("DELETE FROM attendance WHERE event_id = ? AND member_id = ?", event.id, memberId);
@@ -172,10 +217,13 @@ async function setRsvp(c) {
 
 async function updateEvent(c) {
   const before = await getEvent(c.db, c.params.id);
+  requireCanEdit(c, before);
   const f = eventFields(c.body, { partial: true });
   const next = { ...before, ...f };
+  requireTypeAllowed(c, next.type);
   checkEvent(next); // タイトルが空なら種類・相手から自動提案
   f.title = next.title;
+  if (f.end_date !== undefined || f.date !== undefined) f.end_date = next.end_date ?? null;
   const keys = Object.keys(f);
   await c.db.run(
     `UPDATE events SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
@@ -191,7 +239,7 @@ async function updateEvent(c) {
 // 自分の未回答（これからの予定 + 受付中の日程調整）
 async function pending(c) {
   const events = await c.db.all(
-    `SELECT e.* FROM events e WHERE e.date >= ? AND e.status = 'scheduled'
+    `SELECT e.* FROM events e WHERE COALESCE(e.end_date, e.date) >= ? AND e.status = 'scheduled'
        AND NOT EXISTS (SELECT 1 FROM attendance a WHERE a.event_id = e.id AND a.member_id = ?)
      ORDER BY e.date, COALESCE(e.meet_time, e.start_time, '99:99'), e.id`,
     c.now.date,
@@ -326,6 +374,15 @@ export function icsFold(line) {
 const icsDate = (d) => d.replace(/-/g, "");
 const icsLocal = (d, t) => `${icsDate(d)}T${t.replace(":", "")}00`;
 const icsUtc = (ts) => new Date(ts).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+const fmtMd = (d) => {
+  const [y, m, day] = d.split("-").map(Number);
+  return `${m}/${day}(${"日月火水木金土"[new Date(Date.UTC(y, m - 1, day)).getUTCDay()]})`;
+};
+const nightsLabel = (from, to) => {
+  const n = dayCount(from, to);
+  return n > 1 ? `${n - 1}泊${n}日` : "日帰り";
+};
+const feeLabel = (fee) => (Number(fee) === 0 ? "無料" : `${Number(fee).toLocaleString("ja-JP")}円`);
 const plusMinutes = (date, time, mins) => {
   const [h, m] = time.split(":").map(Number);
   let total = h * 60 + m + mins;
@@ -344,7 +401,36 @@ function appLink(env, path, origin) {
   return null;
 }
 
-export function buildIcs(c, events) {
+// お笑いライブ（lives 機能）を ics に含める。lives は別機能なのでテーブルを直接読む（列は lives.js の定義に合わせる）
+function liveVevent(c, l) {
+  const lines = [];
+  const start = l.open_time || l.start_time;
+  const desc = [];
+  if (l.performer) desc.push(`出演: ${l.performer}`);
+  if (l.open_time || l.start_time) desc.push([l.open_time && `開場 ${l.open_time}`, l.start_time && `開演 ${l.start_time}`].filter(Boolean).join(" / "));
+  const price = [l.price_advance != null && `前売 ${feeLabel(l.price_advance)}`, l.price_door != null && `当日 ${feeLabel(l.price_door)}`].filter(Boolean).join(" / ");
+  if (price || l.price_note) desc.push(`料金: ${[price, l.price_note].filter(Boolean).join(" ")}`);
+  if (l.note) desc.push(`メモ: ${l.note}`);
+  const link = appLink(c.env, `/lives/${l.id}`, c.headers?.origin);
+  if (link) desc.push(`詳細: ${link}`);
+  lines.push("BEGIN:VEVENT", `UID:live-${l.id}@joban-team`, `DTSTAMP:${icsUtc(l.updated_at)}`, `LAST-MODIFIED:${icsUtc(l.updated_at)}`);
+  if (start) {
+    let end;
+    if (l.end_time && l.end_time > start) end = [l.date, l.end_time];
+    else end = plusMinutes(l.date, l.start_time || start, l.start_time && l.start_time !== start ? 120 : 150);
+    lines.push(`DTSTART;TZID=Asia/Tokyo:${icsLocal(l.date, start)}`, `DTEND;TZID=Asia/Tokyo:${icsLocal(end[0], end[1])}`);
+  } else {
+    lines.push(`DTSTART;VALUE=DATE:${icsDate(l.date)}`, `DTEND;VALUE=DATE:${icsDate(addDays(l.date, 1))}`);
+  }
+  lines.push(`SUMMARY:${icsEscape(`${l.status === "canceled" ? "【中止】" : ""}🎤 ${l.title}`)}`);
+  if (l.venue) lines.push(`LOCATION:${icsEscape(l.venue)}`);
+  if (desc.length) lines.push(`DESCRIPTION:${icsEscape(desc.join("\n"))}`);
+  if (link) lines.push(`URL:${link}`);
+  lines.push("CATEGORIES:ライブ", `STATUS:${l.status === "canceled" ? "CANCELLED" : "CONFIRMED"}`, "END:VEVENT");
+  return lines;
+}
+
+export function buildIcs(c, events, lives = []) {
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
@@ -367,18 +453,25 @@ export function buildIcs(c, events) {
   ];
   for (const e of events) {
     const start = e.meet_time || e.start_time;
+    const multi = !!e.end_date && e.end_date > e.date;
     const desc = [];
+    if (multi) desc.push(`期間: ${fmtMd(e.date)}〜${fmtMd(e.end_date)}（${nightsLabel(e.date, e.end_date)}）`);
     if (e.meet_time) desc.push(`集合: ${e.meet_time}${e.meet_place ? `（${e.meet_place}）` : ""}`);
     else if (e.meet_place) desc.push(`集合場所: ${e.meet_place}`);
     if (e.start_time) desc.push(`開始: ${e.start_time}${e.end_time ? `〜${e.end_time}` : ""}`);
     if (e.opponent) desc.push(`対戦相手: ${e.opponent}`);
+    if (e.fee !== null && e.fee !== undefined) desc.push(`参加費: ${feeLabel(e.fee)}${e.fee_note ? `（${e.fee_note}）` : ""}`);
+    else if (e.fee_note) desc.push(`参加費: ${e.fee_note}`);
     if (e.belongings) desc.push(`持ち物: ${e.belongings}`);
     if (e.note) desc.push(`メモ: ${e.note}`);
     const link = appLink(c.env, `/schedule/${e.id}`, c.headers?.origin);
     if (link) desc.push(`出欠・詳細: ${link}`);
     const summary = `${e.status === "canceled" ? "【中止】" : ""}${e.title}`;
     lines.push("BEGIN:VEVENT", `UID:event-${e.id}@joban-team`, `DTSTAMP:${icsUtc(e.updated_at)}`, `LAST-MODIFIED:${icsUtc(e.updated_at)}`);
-    if (start) {
+    if (multi) {
+      // 合宿など複数日: 終日の予定（DTEND は最終日の翌日）。時間は説明に入れる
+      lines.push(`DTSTART;VALUE=DATE:${icsDate(e.date)}`, `DTEND;VALUE=DATE:${icsDate(addDays(e.end_date, 1))}`);
+    } else if (start) {
       let end;
       if (e.end_time && e.end_time > start) end = [e.date, e.end_time];
       else end = plusMinutes(e.date, e.start_time || start, e.start_time && e.start_time !== start ? 120 : 180);
@@ -394,6 +487,7 @@ export function buildIcs(c, events) {
     lines.push(`STATUS:${e.status === "canceled" ? "CANCELLED" : "CONFIRMED"}`);
     lines.push("END:VEVENT");
   }
+  for (const l of lives) lines.push(...liveVevent(c, l));
   lines.push("END:VCALENDAR");
   return lines.map(icsFold).join("\r\n") + "\r\n";
 }
@@ -459,6 +553,15 @@ CREATE TABLE IF NOT EXISTS poll_answers (
 );
 `,
     },
+    {
+      // 合宿・飲み会などのイベント（type = 'event'）向けの項目
+      id: "schedule-002",
+      sql: `
+ALTER TABLE events ADD COLUMN IF NOT EXISTS end_date TEXT;   -- 最終日（合宿など複数日。NULL なら1日）
+ALTER TABLE events ADD COLUMN IF NOT EXISTS fee BIGINT;      -- 参加費（円）
+ALTER TABLE events ADD COLUMN IF NOT EXISTS fee_note TEXT;   -- 参加費のメモ（宿泊・食事込み など）
+`,
+    },
   ],
   routes: [
     // ---------------- 予定
@@ -470,13 +573,18 @@ CREATE TABLE IF NOT EXISTS poll_answers (
         if (range === "month") {
           const month = c.query.month || c.now.date.slice(0, 7);
           if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw badRequest("月の形式が不正です");
-          return { events: await listEvents(c, "date LIKE ?", [`${month}-%`], "date, COALESCE(meet_time, start_time, '99:99'), id"), month, today: c.now.date };
+          // 月をまたぐ合宿なども、期間がその月にかかっていれば出す
+          return {
+            events: await listEvents(c, "date <= ? AND COALESCE(end_date, date) >= ?", [`${month}-31`, `${month}-01`], "date, COALESCE(meet_time, start_time, '99:99'), id"),
+            month,
+            today: c.now.date,
+          };
         }
         if (range === "past") {
           const limit = v.int(c.query.limit, "件数", { min: 1, max: 500 }) || 100;
-          return { events: await listEvents(c, "date < ?", [c.now.date], "date DESC, COALESCE(meet_time, start_time, '99:99') DESC, id DESC", limit), today: c.now.date };
+          return { events: await listEvents(c, "COALESCE(end_date, date) < ?", [c.now.date], "date DESC, COALESCE(meet_time, start_time, '99:99') DESC, id DESC", limit), today: c.now.date };
         }
-        return { events: await listEvents(c, "date >= ?", [c.now.date], "date, COALESCE(meet_time, start_time, '99:99'), id"), today: c.now.date };
+        return { events: await listEvents(c, "COALESCE(end_date, date) >= ?", [c.now.date], "date, COALESCE(meet_time, start_time, '99:99'), id"), today: c.now.date };
       },
     ],
     ["GET", "/events/pending", pending],
@@ -485,7 +593,7 @@ CREATE TABLE IF NOT EXISTS poll_answers (
       "/events/next",
       async (c) => {
         const e = await c.db.one(
-          `SELECT id FROM events WHERE date >= ? AND status = 'scheduled'
+          `SELECT id FROM events WHERE COALESCE(end_date, date) >= ? AND status = 'scheduled'
            ORDER BY date, COALESCE(meet_time, start_time, '99:99'), id LIMIT 1`,
           c.now.date,
         );
@@ -510,25 +618,26 @@ CREATE TABLE IF NOT EXISTS poll_answers (
       "POST",
       "/events",
       async (c) => {
-        const event = await insertEvent(c, eventFields(c.body));
+        const f = eventFields(c.body);
+        requireTypeAllowed(c, f.type);
+        const event = await insertEvent(c, f);
         c.emit("event.created", { event });
         return { event };
       },
-      { auth: "admin" },
     ],
-    ["PATCH", "/events/:id", updateEvent, { auth: "admin" }],
+    ["PATCH", "/events/:id", updateEvent],
     [
       "POST",
       "/events/:id/cancel",
       async (c) => {
         const before = await getEvent(c.db, c.params.id);
+        requireCanEdit(c, before);
         if (before.status === "canceled") return { event: before };
         await c.db.run("UPDATE events SET status = 'canceled', updated_at = ? WHERE id = ?", c.now.ts, before.id);
         const event = await getEvent(c.db, before.id);
         c.emit("event.canceled", { event });
         return { event };
       },
-      { auth: "admin" },
     ],
     // 中止の取り消し
     [
@@ -536,19 +645,20 @@ CREATE TABLE IF NOT EXISTS poll_answers (
       "/events/:id/restore",
       async (c) => {
         const before = await getEvent(c.db, c.params.id);
+        requireCanEdit(c, before);
         if (before.status !== "canceled") return { event: before };
         await c.db.run("UPDATE events SET status = 'scheduled', updated_at = ? WHERE id = ?", c.now.ts, before.id);
         const event = await getEvent(c.db, before.id);
         c.emit("event.updated", { event, before });
         return { event };
       },
-      { auth: "admin" },
     ],
     [
       "DELETE",
       "/events/:id",
       async (c) => {
         const e = await getEvent(c.db, c.params.id);
+        requireCanEdit(c, e);
         if (await c.db.one("SELECT id FROM games WHERE event_id = ? LIMIT 1", e.id)) {
           throw conflict("試合結果が登録されている予定は削除できません。中止にしてください");
         }
@@ -562,7 +672,6 @@ CREATE TABLE IF NOT EXISTS poll_answers (
         });
         return { ok: true };
       },
-      { auth: "admin" },
     ],
     ["PUT", "/events/:id/rsvp", setRsvp],
 
@@ -784,7 +893,10 @@ CREATE TABLE IF NOT EXISTS poll_answers (
       async (c) => {
         if (!safeEqual(c.params.token, c.settings.icsToken)) throw notFound("カレンダーが見つかりません");
         const events = await c.db.all("SELECT * FROM events WHERE date >= ? ORDER BY date, id", addDays(c.now.date, -365));
-        return raw(buildIcs(c, events), {
+        const from = addDays(c.now.date, -365);
+        const hasLives = !!(await c.db.one("SELECT to_regclass('lives') AS t")).t;
+        const lives = hasLives ? await c.db.all("SELECT * FROM lives WHERE date >= ? ORDER BY date, id", from) : [];
+        return raw(buildIcs(c, events, lives), {
           headers: {
             "Content-Type": "text/calendar; charset=utf-8",
             "Content-Disposition": 'inline; filename="team.ics"',

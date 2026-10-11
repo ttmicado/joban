@@ -344,3 +344,41 @@ button.sch-person:not(:disabled):active { background: var(--card-hi); }
 }
 .sch-gameday span:first-child { font-family: var(--num); font-size: 24px; letter-spacing: 0.08em; line-height: 1; }
 .sch-gameday-sub { font-size: 12px; font-weight: 900; }
+
+/* ---------------------------------------------------------------- イベント（合宿・飲み会など）・ライブ */
+.sch-item.t-event::before { background: var(--sch-event, #ff7eb6); }
+.sch-item.t-live::before { background: var(--sch-live, #c77dff); }
+.sch-chip-event { background: rgba(255, 126, 182, 0.16); color: #ff8fc0; }
+.sch-chip-live { background: rgba(199, 125, 255, 0.18); color: #d8a6ff; border: 1px solid rgba(199, 125, 255, 0.35); }
+.sch-dots i.t-event, .sch-legend i.t-event { background: #ff7eb6; }
+.sch-dots i.t-live, .sch-legend i.t-live { background: transparent; box-shadow: 0 0 0 2px #d08cff inset; } /* ライブは白抜きの紫 */
+.sch-dots i.x { background: var(--dim); }
+.sch-type-pick.cols-4 { grid-template-columns: repeat(2, 1fr); }
+.sch-type-pick.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.sch-type-opt.event input:checked + span { background: rgba(255, 126, 182, 0.18); border-color: #ff7eb6; color: #ff8fc0; }
+.sch-form.t-event .btn-primary[type="submit"] { background: linear-gradient(180deg, #ff8fc0, #e0559a); border-color: #e0559a; color: #fff; }
+
+.sch-hero.t-event, .sch-next.t-event {
+  background: radial-gradient(120% 120% at 100% 0%, rgba(255, 126, 182, 0.3), transparent 55%), linear-gradient(160deg, #2a2560, #161d4a);
+  border-color: rgba(255, 126, 182, 0.4);
+}
+.sch-hero-period { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.sch-hero-period .num { font-size: 18px; }
+.sch-nights { padding: 1px 8px; font-size: 11px; background: rgba(255, 126, 182, 0.18); color: #ff9cc8; font-family: var(--font); }
+.sch-next-date .sch-nights { vertical-align: middle; }
+.sch-fee-box { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; padding: 10px 12px; border-radius: 12px; background: rgba(0, 0, 0, 0.25); border: 1px solid rgba(255, 126, 182, 0.3); }
+.sch-fee-val { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.sch-fee-val .num { font-size: 26px; line-height: 1; color: var(--amber); }
+.sch-fee-note { font-size: 13px; font-weight: 700; color: var(--text); }
+.sch-period-sub { color: #ff9cc8; font-weight: 700; }
+.sch-period-sub b { font-size: 11px; margin-left: 2px; }
+.sch-fee-sub { font-size: 12px; }
+.sch-next-fee { padding: 8px 12px; border-radius: 12px; background: rgba(0, 0, 0, 0.25); }
+.sch-next-fee b { color: var(--amber); }
+.sch-datebox.multi { border-color: rgba(255, 126, 182, 0.45); }
+.sch-datebox-end { color: #ff9cc8; font-size: 11px; }
+.sch-ev-lead { font-size: 13px; line-height: 1.7; padding: 10px 12px; border-radius: 12px; background: rgba(255, 126, 182, 0.1); border: 1px solid rgba(255, 126, 182, 0.3); }
+.sch-period { margin-top: -6px; color: #ff9cc8; font-weight: 700; }
+.sch-creator { align-items: center; gap: 8px; min-height: 44px; }
+.sch-creator .list-sub b { color: var(--text); }
+.sch-live-my { font-size: 10px; font-weight: 700; color: var(--muted); white-space: nowrap; }
