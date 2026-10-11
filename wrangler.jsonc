@@ -28,5 +28,8 @@
     // ローカル確認用のモックログイン。本番では必ず "false"
     "ALLOW_MOCK": "false"
   }
-  // 管理者キーは `npx wrangler secret put ADMIN_KEY` で設定
+  // シークレットは wrangler secret で設定:
+  //   npx wrangler secret put ADMIN_KEY              … ガラポン管理画面のパスワード
+  //   npx wrangler secret put LINE_MESSAGING_TOKEN   … （任意）LINE公式アカウントのチャネルアクセストークン
+  //   npx wrangler secret put LINE_MESSAGING_SECRET  … （任意）同チャネルシークレット（webhook 署名検証）
 }

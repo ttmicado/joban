@@ -58,6 +58,7 @@ async function team(request, env, path) {
     query: Object.fromEntries(url.searchParams),
     body,
     user,
+    headers: { host: url.host, origin: url.origin },
   });
 }
 
@@ -72,7 +73,11 @@ async function lineWebhook(request, env) {
     path: "/line/webhook",
     body,
     rawBody,
-    headers: { "x-line-signature": request.headers.get("x-line-signature") || "" },
+    headers: {
+      "x-line-signature": request.headers.get("x-line-signature") || "",
+      host: new URL(request.url).host,
+      origin: new URL(request.url).origin,
+    },
   });
 }
 
