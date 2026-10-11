@@ -170,7 +170,9 @@ export const getHomeCards = () => [...homeCards].sort((a, b) => (a.order ?? 50) 
 export const getMenuItems = () => [...menuItems].sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
 
 export function currentPath() {
-  const h = location.hash.replace(/^#/, "") || "/";
+  let h = location.hash.replace(/^#/, "");
+  // LIFF のリダイレクトで一時的に付く「#access_token=...」などルート以外のハッシュはホーム扱い
+  if (!h.startsWith("/")) h = "/";
   const [path, qs] = h.split("?");
   return { path, query: Object.fromEntries(new URLSearchParams(qs || "")) };
 }
