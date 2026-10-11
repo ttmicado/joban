@@ -35,7 +35,7 @@ LINE 公式アカウント（Messaging API）をチームの LINE グループ�
 
 「Messaging API設定」の **Webhook設定** で:
 
-1. Webhook URL に `https://<Vercel のドメイン>/api/line/webhook` を入力（例: `https://joban.vercel.app/api/line/webhook`）
+1. Webhook URL に `https://<Vercel のドメイン>/api/line/webhook` を入力（例: `https://joban-beta.vercel.app/api/line/webhook`。Vercel の Settings → Domains に出ている本番ドメインを使う）
    （アプリの「その他 → LINE通知」画面にコピーできる URL が表示されます）
 2. 「検証」を押して「成功」と出ることを確認
 3. **Webhookの利用** をオン

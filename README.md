@@ -39,7 +39,7 @@ LINE アカウントでログインするので、メンバーは登録や ID・
 2. 設定は次のとおりです。
    - Framework Preset: **Other**
    - Build Command / Output Directory: 空欄のまま（`vercel.json` に書いてあります）
-3. **Deploy** を押します。表示された `https://<プロジェクト名>.vercel.app` を控えておきます。
+3. **Deploy** を押します。表示された Vercel の **Settings → Domains** に出ている本番ドメイン（例 `https://joban-beta.vercel.app`） を控えておきます。
    - この時点ではまだデータベースも LINE の設定も無いので、アプリは動きません。
 
 ### 2. Neon（データベース）をつなぐ
