@@ -6,5 +6,6 @@ import stats from "./stats.js";
 import community from "./community.js";
 import line from "./line.js";
 import importer from "./importer.js";
+import lives from "./lives.js";
 
-export const features = [members, schedule, games, stats, community, line, importer];
+export const features = [members, schedule, games, stats, community, line, importer, lives];
