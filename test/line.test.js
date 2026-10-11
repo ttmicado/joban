@@ -501,3 +501,4 @@ test("flex: 空の値は出さず、LIFF が無ければボタンを出さない
   assert.match(json(r), /DRAW/);
   assert.equal(r.footer.contents[0].action.uri, "https://liff.line.me/x/#/games/1");
 });
+

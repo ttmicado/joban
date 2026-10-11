@@ -465,7 +465,7 @@ async function onEventUpdated(c, { event, before }) {
 async function onPollCreated(c, { poll, options = [] }) {
   if (!poll || !canSend(c, "poll")) return;
   const lines = options.slice(0, 10).map((o) => {
-    const label = [o.date ? fmtDay(o.date) : "", o.time || o.start_time || "", o.label || o.title || ""].filter(Boolean).join(" ");
+    const label = [o.date ? fmtDay(o.date) : "", o.time || o.start_time || "", o.note || o.label || o.title || ""].filter(Boolean).join(" ");
     return `・${label || "候補"}`;
   });
   if (options.length > 10) lines.push(`ほか${options.length - 10}件`);
@@ -538,7 +538,7 @@ async function onGameFinalized(c, { game }) {
 }
 
 function isImportant(n) {
-  return !!(n.important || n.is_important || n.pinned || ["high", "important"].includes(n.priority) || n.level === "important");
+  return !!(n.category === "important" || n.important || n.is_important || n.pinned || ["high", "important"].includes(n.priority) || n.level === "important");
 }
 
 async function onNoticeCreated(c, { notice, author }) {
