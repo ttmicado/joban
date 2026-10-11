@@ -1,1 +1,168 @@
-/* stats 機能のスタイル */
+/* stats 機能のスタイル（接頭辞 st-） */
+
+/* シーズン切り替え */
+.st-seasons { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: -2px -16px; padding: 2px 16px; }
+.st-seasons::-webkit-scrollbar { display: none; }
+.st-season {
+  flex: none; min-height: 36px; padding: 6px 16px; border-radius: 99px; display: inline-flex; align-items: center;
+  border: 1px solid var(--line-2); background: var(--bg-2); color: var(--muted); font-family: var(--num); font-size: 18px; letter-spacing: 0.04em;
+}
+.st-season.active { background: var(--amber); border-color: var(--amber); color: #2b1d00; box-shadow: 0 4px 14px rgba(255, 200, 61, 0.3); }
+.st-qualify { text-align: center; }
+.st-qualify b { color: var(--text); font-size: 16px; font-weight: 400; }
+.st-body { gap: 14px; }
+
+/* 表彰台 */
+.st-cat .card-head { margin-bottom: 6px; }
+.st-cat-empty { padding: 18px 8px; text-align: center; color: var(--muted); font-size: 14px; }
+.st-podium { display: grid; grid-template-columns: 1fr 1.15fr 1fr; align-items: end; gap: 6px; padding-top: 14px; }
+.st-pod { display: flex; flex-direction: column; align-items: center; gap: 3px; color: inherit; min-width: 0; }
+.st-pod-none { visibility: hidden; }
+.st-pod-avatar { position: relative; display: inline-flex; }
+.st-pod-gold .st-pod-avatar .avatar { border-color: #ffd54a; box-shadow: 0 0 0 3px rgba(255, 213, 74, 0.25), 0 0 24px rgba(255, 213, 74, 0.45); }
+.st-pod-silver .st-pod-avatar .avatar { border-color: #d6dee9; }
+.st-pod-bronze .st-pod-avatar .avatar { border-color: #d98e4f; }
+.st-crown { position: absolute; top: -18px; left: 50%; translate: -50% 0; font-size: 20px; animation: st-bob 2.4s ease-in-out infinite; }
+@keyframes st-bob { 50% { transform: translateY(-3px) rotate(-6deg); } }
+.st-pod-name { max-width: 100%; font-size: 12px; font-weight: 700; margin-top: 2px; }
+.st-pod-value { font-size: 24px; line-height: 1; color: var(--text); }
+.st-pod-gold .st-pod-value { font-size: 34px; color: var(--amber); text-shadow: 0 0 14px rgba(255, 200, 61, 0.45); }
+.st-pod-step {
+  width: 100%; display: grid; place-items: center; margin-top: 6px; border-radius: 10px 10px 4px 4px;
+  font-size: 22px; color: rgba(0, 0, 0, 0.55);
+}
+.st-pod-gold .st-pod-step { height: 54px; background: linear-gradient(180deg, #ffe07a, #e0a91a); }
+.st-pod-silver .st-pod-step { height: 38px; background: linear-gradient(180deg, #eef2f8, #a9b4c4); }
+.st-pod-bronze .st-pod-step { height: 26px; background: linear-gradient(180deg, #f0b07a, #a8622d); }
+.st-pod.is-me .st-pod-name { color: var(--green); }
+.st-pod.is-me .st-pod-name::before { content: "あなた・"; font-size: 10px; }
+.st-podium.compact { padding-top: 16px; }
+.st-podium.compact .st-pod-gold .st-pod-value { font-size: 28px; }
+.st-podium.compact .st-pod-gold .st-pod-step { height: 40px; }
+.st-podium.compact .st-pod-silver .st-pod-step { height: 28px; }
+.st-podium.compact .st-pod-bronze .st-pod-step { height: 20px; font-size: 18px; }
+
+.st-rest { list-style: none; margin: 10px 0 0; padding: 0; border-top: 1px solid var(--line); }
+.st-rest li { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.st-rest li:last-child { border-bottom: 0; }
+.st-rest li a { color: inherit; }
+.st-rest-rank { width: 22px; text-align: center; color: var(--muted); font-size: 18px; }
+.st-rest-value { font-size: 20px; }
+.st-rest li.is-me { background: rgba(39, 209, 127, 0.12); border-radius: 8px; }
+
+.st-me { margin-top: 10px; padding: 8px 12px; border-radius: 10px; background: rgba(39, 209, 127, 0.12); color: var(--green); font-weight: 700; font-size: 13px; display: flex; align-items: baseline; gap: 6px; }
+.st-me .num { font-size: 20px; color: var(--text); font-weight: 400; }
+.st-me-top { background: linear-gradient(90deg, rgba(255, 200, 61, 0.25), rgba(255, 200, 61, 0.06)); color: var(--amber); }
+.st-me-wait { background: var(--bg-2); color: var(--muted); font-weight: 500; }
+.st-me-wait b { color: var(--amber); font-size: 18px; font-weight: 400; margin: 0 2px; }
+
+/* チーム */
+.st-team-hero { text-align: center; }
+.st-record { display: flex; justify-content: center; align-items: baseline; gap: 4px; margin: 4px 0 10px; }
+.st-record .num { font-size: 64px; line-height: 1; }
+.st-record small { font-size: 16px; font-weight: 900; margin-right: 12px; color: var(--muted); }
+.st-record small:last-child { margin-right: 0; }
+.st-team-hero .row { justify-content: center; }
+.st-bars { display: flex; flex-direction: column; gap: 10px; }
+.st-bar { display: grid; grid-template-columns: 34px 1fr 44px; align-items: center; gap: 8px; }
+.st-bar-label { font-size: 12px; font-weight: 700; color: var(--muted); }
+.st-bar-track { height: 14px; border-radius: 99px; background: var(--bg-2); overflow: hidden; }
+.st-bar-fill { display: block; height: 100%; border-radius: 99px; transform-origin: left; animation: st-grow 0.9s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.st-bar-us { background: linear-gradient(90deg, var(--green-dark), var(--green)); }
+.st-bar-them { background: linear-gradient(90deg, #a83a3e, var(--red)); }
+@keyframes st-grow { from { transform: scaleX(0); } }
+.st-bar-num { font-size: 24px; text-align: right; }
+.st-bars-note { margin-top: 10px; }
+.st-marks { display: flex; flex-wrap: wrap; gap: 6px; }
+.st-marks a { display: inline-flex; animation: st-pop 0.3s both; }
+.st-score { font-size: 22px; }
+@keyframes st-pop { from { transform: scale(0.4); opacity: 0; } }
+
+/* 成績表 */
+.st-table-tools { justify-content: space-between; }
+.st-req { text-align: right; }
+.st-table-wrap { max-height: calc(100dvh - 260px); overflow: auto; }
+.st-table th { padding: 0; z-index: 2; }
+.st-table th:first-child { padding: 9px 10px; z-index: 3; }
+.st-th { border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; padding: 10px 10px; min-height: 40px; cursor: pointer; white-space: nowrap; }
+.st-th.active { color: var(--amber); }
+.st-table td.st-sorted { color: var(--amber); background: rgba(255, 200, 61, 0.05); }
+.st-table tr.is-me td { background: rgba(39, 209, 127, 0.12); }
+.st-table tr.is-me td:first-child { background: #183f3a; box-shadow: inset 3px 0 0 var(--green); }
+.st-table tr.st-unq td { color: var(--muted); }
+.st-table tr.st-unq td.st-sorted { color: #b9a46a; }
+.st-name { color: inherit; display: inline-flex; align-items: center; gap: 2px; }
+.st-unq-mark { color: var(--dim); font-size: 11px; }
+.st-guest { margin-left: 4px; font-size: 10px; padding: 0 4px; border-radius: 4px; background: rgba(167, 139, 250, 0.2); color: var(--purple); }
+
+/* 選手ページ: 野球カード */
+.st-card {
+  --pc: #4da3ff;
+  position: relative; overflow: hidden; border-radius: 20px; padding: 16px;
+  background:
+    radial-gradient(130% 90% at 100% 0%, color-mix(in srgb, var(--pc) 38%, transparent), transparent 60%),
+    linear-gradient(160deg, #1d2d5a, #0f1736 70%);
+  border: 2px solid color-mix(in srgb, var(--pc) 70%, transparent);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45), inset 0 0 0 4px rgba(255, 255, 255, 0.04);
+  animation: st-card-in 0.5s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+@keyframes st-card-in { from { transform: rotateY(-25deg) scale(0.92); opacity: 0; } }
+.st-card-shine {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.14) 45%, transparent 60%);
+  transform: translateX(-100%); animation: st-shine 2.6s 0.4s ease-out both;
+}
+@keyframes st-shine { to { transform: translateX(100%); } }
+.st-card-top { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; position: relative; }
+.st-card-num {
+  font-size: 64px; line-height: 0.9; color: var(--pc); min-width: 52px; text-align: center;
+  text-shadow: 0 0 20px color-mix(in srgb, var(--pc) 55%, transparent);
+}
+.st-card-id { min-width: 0; }
+.st-card-name { font-family: var(--display); font-size: 22px; line-height: 1.25; word-break: break-all; }
+.st-card-pos { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.st-pos { --pc: var(--blue); font-size: 11px; font-weight: 900; padding: 2px 8px; border-radius: 6px; background: color-mix(in srgb, var(--pc) 22%, transparent); color: var(--pc); }
+.st-card-meta { font-size: 12px; color: var(--muted); margin-top: 6px; font-weight: 700; }
+.st-card-avatar .avatar { border: 3px solid var(--pc); box-shadow: 0 0 22px color-mix(in srgb, var(--pc) 45%, transparent); }
+.st-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; position: relative; }
+.st-badge {
+  font-size: 12px; font-weight: 900; padding: 4px 10px; border-radius: 99px;
+  background: linear-gradient(180deg, #ffe58a, #e0a91a); color: #3a2600; box-shadow: 0 3px 10px rgba(255, 200, 61, 0.3);
+}
+.st-badge-now { background: linear-gradient(180deg, #4ff0a3, var(--green)); color: #04220f; }
+.st-form { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line-2); font-size: 14px; position: relative; }
+.st-form-icon { font-size: 20px; }
+.st-form-dots { display: inline-flex; gap: 4px; margin-left: auto; }
+.st-form-dots i { width: 12px; height: 12px; border-radius: 50%; background: var(--card-hi); border: 1px solid var(--line-2); }
+.st-form-dots i.hit { background: var(--green); }
+.st-form-dots i.multi { background: var(--amber); }
+.st-form-dots i.hr { background: var(--red); box-shadow: 0 0 8px var(--red); }
+.st-ip { font-size: 26px; }
+
+.st-ranks { display: grid; grid-template-columns: repeat(auto-fill, minmax(98px, 1fr)); gap: 8px; }
+.st-rank { display: flex; align-items: baseline; gap: 4px; padding: 8px 10px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); }
+.st-rank-label { font-size: 11px; font-weight: 700; color: var(--muted); flex: 1; white-space: nowrap; }
+.st-rank b { font-size: 24px; font-weight: 400; line-height: 1; }
+.st-rank-of { font-size: 10px; color: var(--dim); white-space: nowrap; }
+.st-rank.gold { border-color: rgba(255, 213, 74, 0.6); background: linear-gradient(180deg, rgba(255, 213, 74, 0.18), var(--card)); }
+.st-rank.gold b { color: var(--amber); }
+.st-rank.silver b { color: #d6dee9; }
+.st-rank.bronze b { color: #f0b07a; }
+
+.st-spark { display: block; width: 100%; height: 110px; overflow: visible; touch-action: pan-y; cursor: crosshair; }
+.st-spark-line { fill: none; stroke: var(--green); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.st-spark-ref { stroke: var(--line-2); stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
+.st-spark-reftext { fill: var(--dim); font-size: 10px; }
+.st-spark-cross { stroke: var(--muted); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.st-spark-dot { fill: var(--amber); stroke: var(--card); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.st-spark-tip { margin-top: 6px; min-height: 18px; text-align: center; }
+
+.st-log .list-item { align-items: flex-start; }
+.st-log .result { margin-top: 2px; }
+.st-log-score { font-size: 17px; color: var(--muted); margin-left: 4px; }
+.st-log-line { font-size: 13px; margin-top: 4px; color: var(--text); }
+.st-log-line.hot { color: var(--amber); font-weight: 700; }
+
+/* ホームカード */
+.st-home-line { margin-top: 10px; font-size: 13px; font-weight: 700; color: var(--green); }
+.st-home-leaders .segmented { margin-bottom: 2px; }

@@ -229,8 +229,10 @@ export async function render() {
       break;
     }
   }
-  // タブの選択状態
-  const top = "/" + (path.split("/")[1] || "");
+  // タブの選択状態（/players は成績タブ、/notices・/wakeup・/practice はチームタブ扱い）
+  const alias = { "/players": "/stats", "/notices": "/team", "/wakeup": "/team", "/practice": "/team", "/polls": "/schedule" };
+  const first = "/" + (path.split("/")[1] || "");
+  const top = alias[first] || first;
   for (const a of document.querySelectorAll("#tabbar a")) a.classList.toggle("active", a.dataset.tab === top);
 
   // 描画中に別ページへ移動したとき古い描画を捨てるため、新しい要素に描いてから差し替える
