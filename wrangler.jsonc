@@ -6,12 +6,20 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": ["/api/*", "/ics/*"]
   },
   "durable_objects": {
-    "bindings": [{ "name": "LOTTERY", "class_name": "Lottery" }]
+    "bindings": [
+      { "name": "LOTTERY", "class_name": "Lottery" },
+      { "name": "TEAM", "class_name": "Team" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Lottery"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Lottery"] },
+    { "tag": "v2", "new_sqlite_classes": ["Team"] }
+  ],
+  // 15分ごとにリマインド通知などを実行
+  "triggers": { "crons": ["*/15 * * * *"] },
   "vars": {
     // LINE Developers で作成した LIFF ID（例: 2001234567-AbCdEfGh）
     "LIFF_ID": "",

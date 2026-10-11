@@ -1,179 +1,7 @@
-import { DurableObject } from "cloudflare:workers";
-import {
-  DEFAULT_CONFIG,
-  LotteryError,
-  enter,
-  initialState,
-  publicBoard,
-  spin,
-  stats,
-} from "./lottery.js";
+import { HttpError, authenticate, checkAdmin } from "./auth.js";
 
-// 抽選の状態は Durable Object 1個に集約する。
-// DO は1リクエストずつ直列に処理されるため、同時に回しても金玉が3個出ることはない。
-export class Lottery extends DurableObject {
-  async load() {
-    return (await this.ctx.storage.get("state")) ?? initialState();
-  }
-
-  async save(state) {
-    await this.ctx.storage.put("state", state);
-  }
-
-  async view(userId) {
-    const state = await this.load();
-    return {
-      stats: stats(state),
-      board: publicBoard(state),
-      me: userId ? (state.entries[userId] ?? null) : null,
-    };
-  }
-
-  // LotteryError は RPC 越しに型が失われるので、値として返す
-  async guard(fn) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (err instanceof LotteryError) return { error: err.code, message: err.message };
-      throw err;
-    }
-  }
-
-  enter(profile) {
-    return this.guard(() => this.#enter(profile));
-  }
-
-  spin(userId) {
-    return this.guard(() => this.#spin(userId));
-  }
-
-  adminConfig(patch) {
-    return this.guard(() => this.#adminConfig(patch));
-  }
-
-  async #enter(profile) {
-    const state = await this.load();
-    const { entry } = enter(state, profile);
-    // 表示名・アイコンは最新のものに更新
-    entry.name = profile.displayName;
-    entry.picture = profile.pictureUrl || entry.picture;
-    await this.save(state);
-    return { stats: stats(state), board: publicBoard(state), me: entry };
-  }
-
-  async #spin(userId) {
-    const state = await this.load();
-    const { entry, created } = spin(state, userId, secureRandom);
-    if (created) await this.save(state);
-    return { stats: stats(state), board: publicBoard(state), me: entry, fresh: created };
-  }
-
-  async adminState() {
-    return await this.load();
-  }
-
-  async #adminConfig(patch) {
-    const state = await this.load();
-    const s = stats(state);
-    const next = { ...state.config };
-    if (patch.total !== undefined) {
-      const total = int(patch.total);
-      if (total < Math.max(1, s.entries, s.drawn)) {
-        throw new LotteryError("bad_config", "玉の数はエントリー人数以上にしてください");
-      }
-      next.total = total;
-    }
-    if (patch.prizes !== undefined) next.prizes = int(patch.prizes);
-    if (patch.prizeName !== undefined) next.prizeName = String(patch.prizeName).slice(0, 40);
-    if (patch.open !== undefined) next.open = Boolean(patch.open);
-    const goldDrawn = Object.values(state.entries).filter((e) => e.result?.win).length;
-    if (next.prizes < goldDrawn || next.prizes > next.total) {
-      throw new LotteryError("bad_config", "当選数の値が不正です");
-    }
-    state.config = next;
-    await this.save(state);
-    return state;
-  }
-
-  async adminReset(keepEntries) {
-    const state = await this.load();
-    if (keepEntries) {
-      for (const e of Object.values(state.entries)) e.result = null;
-    } else {
-      state.entries = {};
-    }
-    state.config = { ...DEFAULT_CONFIG, ...state.config, open: true };
-    await this.save(state);
-    return state;
-  }
-}
-
-function int(v) {
-  const n = Number.parseInt(v, 10);
-  if (!Number.isFinite(n) || n < 0 || n > 1000) throw new LotteryError("bad_config", "数値が不正です");
-  return n;
-}
-
-function secureRandom() {
-  const buf = new Uint32Array(1);
-  crypto.getRandomValues(buf);
-  return buf[0] / 2 ** 32;
-}
-
-// --- LINE 認証 -----------------------------------------------------------
-
-class HttpError extends Error {
-  constructor(status, code, message) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
-
-// LIFF のアクセストークンを LINE Platform で検証し、プロフィールを取得する。
-async function authenticate(request, env) {
-  const auth = request.headers.get("Authorization") || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token) throw new HttpError(401, "no_token", "LINEログインが必要です");
-
-  if (token.startsWith("mock:")) {
-    if (env.ALLOW_MOCK !== "true") throw new HttpError(401, "mock_disabled", "モックログインは無効です");
-    const [, id, name] = token.split(":");
-    return {
-      userId: `mock-${id}`,
-      displayName: decodeURIComponent(name || `テスト${id}`),
-      pictureUrl: "",
-    };
-  }
-
-  const verify = await fetch(
-    `https://api.line.me/oauth2/v2.1/verify?access_token=${encodeURIComponent(token)}`,
-  );
-  if (!verify.ok) throw new HttpError(401, "invalid_token", "LINEの認証が切れました");
-  const info = await verify.json();
-  if (!env.LINE_CHANNEL_ID || String(info.client_id) !== String(env.LINE_CHANNEL_ID)) {
-    throw new HttpError(401, "wrong_channel", "このアプリ用のトークンではありません");
-  }
-  if (!(info.expires_in > 0)) throw new HttpError(401, "expired", "LINEの認証が切れました");
-
-  const prof = await fetch("https://api.line.me/v2/profile", {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!prof.ok) throw new HttpError(401, "profile_failed", "プロフィールを取得できませんでした");
-  const p = await prof.json();
-  return { userId: p.userId, displayName: p.displayName, pictureUrl: p.pictureUrl || "" };
-}
-
-function checkAdmin(request, env) {
-  const key = request.headers.get("X-Admin-Key") || "";
-  if (!env.ADMIN_KEY || key !== env.ADMIN_KEY) {
-    throw new HttpError(403, "forbidden", "管理キーが違います");
-  }
-}
-
-// --- ルーティング ----------------------------------------------------------
-
-const result = (data) => (data && data.error ? json(data, 409) : json(data));
+export { Lottery } from "./garapon/do.js";
+export { Team } from "./team/do.js";
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -181,51 +9,113 @@ const json = (data, status = 200) =>
     headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
   });
 
+const teamStub = (env) => env.TEAM.get(env.TEAM.idFromName("team"));
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
-
-    const lottery = env.LOTTERY.get(env.LOTTERY.idFromName("main"));
-    const route = `${request.method} ${url.pathname}`;
+    const path = url.pathname;
     try {
-      switch (route) {
-        case "GET /api/config":
-          return json({ liffId: env.LIFF_ID || "", mock: env.ALLOW_MOCK === "true" });
-        case "GET /api/board":
-          return json(await lottery.view(null));
-        case "GET /api/me": {
-          const p = await authenticate(request, env);
-          return json({ profile: p, ...(await lottery.view(p.userId)) });
-        }
-        case "POST /api/entry": {
-          const p = await authenticate(request, env);
-          const r = await lottery.enter(p);
-          return r.error ? json(r, 409) : json({ profile: p, ...r });
-        }
-        case "POST /api/spin": {
-          const p = await authenticate(request, env);
-          const r = await lottery.spin(p.userId);
-          return r.error ? json(r, 409) : json({ profile: p, ...r });
-        }
-        case "GET /api/admin/state":
-          checkAdmin(request, env);
-          return json(await lottery.adminState());
-        case "POST /api/admin/config":
-          checkAdmin(request, env);
-          return result(await lottery.adminConfig(await request.json()));
-        case "POST /api/admin/reset": {
-          checkAdmin(request, env);
-          const body = await request.json().catch(() => ({}));
-          return json(await lottery.adminReset(Boolean(body.keepEntries)));
-        }
-        default:
-          return json({ error: "not_found", message: "Not found" }, 404);
+      if (path === "/api/config") {
+        return json({ liffId: env.LIFF_ID || "", mock: env.ALLOW_MOCK === "true" });
       }
+      if (path.startsWith("/api/garapon/")) return await garapon(request, env, path.slice("/api/garapon".length));
+      if (path.startsWith("/api/team/")) return await team(request, env, path.slice("/api/team".length));
+      if (path === "/api/line/webhook" && request.method === "POST") return await lineWebhook(request, env);
+      // カレンダー購読: /ics/<token>.ics
+      const ics = /^\/ics\/([\w-]+)\.ics$/.exec(path);
+      if (ics) return await teamRaw(env, { method: "GET", path: `/ics/${ics[1]}` });
+      if (path.startsWith("/api/")) return json({ error: "not_found", message: "Not found" }, 404);
+      return env.ASSETS.fetch(request);
     } catch (err) {
       if (err instanceof HttpError) return json({ error: err.code, message: err.message }, err.status);
       console.error(err);
       return json({ error: "server", message: "サーバーエラーが発生しました" }, 500);
     }
   },
+
+  // 15分ごとの定期実行（リマインド通知など）
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(teamStub(env).cron());
+  },
 };
+
+// --- チームアプリ ----------------------------------------------------------
+
+async function team(request, env, path) {
+  // Authorization ヘッダーがあればログインユーザーとして扱う（public な API は無くても可）
+  const user = request.headers.get("Authorization") ? await authenticate(request, env) : null;
+  let body = null;
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    body = await request.json().catch(() => {
+      throw new HttpError(400, "bad_json", "リクエストの形式が不正です");
+    });
+  }
+  const url = new URL(request.url);
+  return teamRaw(env, {
+    method: request.method,
+    path,
+    query: Object.fromEntries(url.searchParams),
+    body,
+    user,
+  });
+}
+
+async function lineWebhook(request, env) {
+  const rawBody = await request.text();
+  let body = null;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {}
+  return teamRaw(env, {
+    method: "POST",
+    path: "/line/webhook",
+    body,
+    rawBody,
+    headers: { "x-line-signature": request.headers.get("x-line-signature") || "" },
+  });
+}
+
+async function teamRaw(env, req) {
+  const res = await teamStub(env).handle(req);
+  return new Response(res.body, {
+    status: res.status,
+    headers: { "Cache-Control": "no-store", ...res.headers },
+  });
+}
+
+// --- ガラポン ---------------------------------------------------------------
+
+async function garapon(request, env, path) {
+  const lottery = env.LOTTERY.get(env.LOTTERY.idFromName("main"));
+  const asResult = (r, profile) => (r.error ? json(r, 409) : json(profile ? { profile, ...r } : r));
+  switch (`${request.method} ${path}`) {
+    case "GET /board":
+      return json(await lottery.view(null));
+    case "GET /me": {
+      const p = await authenticate(request, env);
+      return json({ profile: p, ...(await lottery.view(p.userId)) });
+    }
+    case "POST /entry": {
+      const p = await authenticate(request, env);
+      return asResult(await lottery.enter(p), p);
+    }
+    case "POST /spin": {
+      const p = await authenticate(request, env);
+      return asResult(await lottery.spin(p.userId), p);
+    }
+    case "GET /admin/state":
+      checkAdmin(request, env);
+      return json(await lottery.adminState());
+    case "POST /admin/config":
+      checkAdmin(request, env);
+      return asResult(await lottery.adminConfig(await request.json()));
+    case "POST /admin/reset": {
+      checkAdmin(request, env);
+      const body = await request.json().catch(() => ({}));
+      return json(await lottery.adminReset(Boolean(body.keepEntries)));
+    }
+    default:
+      return json({ error: "not_found", message: "Not found" }, 404);
+  }
+}

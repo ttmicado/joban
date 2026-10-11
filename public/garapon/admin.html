@@ -82,13 +82,13 @@
       $("#rows").append(tr);
     }
   }
-  $("#load").onclick = () => call("/api/admin/state");
-  $("#save").onclick = () => call("/api/admin/config", {
+  $("#load").onclick = () => call("/api/garapon/admin/state");
+  $("#save").onclick = () => call("/api/garapon/admin/config", {
     total: $("#total").value, prizes: $("#prizes").value, prizeName: $("#prizeName").value, open: $("#open").checked,
   });
-  $("#reset-results").onclick = () => confirm("抽選結果をすべて消しますか？") && call("/api/admin/reset", { keepEntries: true });
-  $("#reset-all").onclick = () => confirm("エントリーと結果をすべて消しますか？") && call("/api/admin/reset", { keepEntries: false });
-  if ($("#key").value) call("/api/admin/state").catch(() => {});
+  $("#reset-results").onclick = () => confirm("抽選結果をすべて消しますか？") && call("/api/garapon/admin/reset", { keepEntries: true });
+  $("#reset-all").onclick = () => confirm("エントリーと結果をすべて消しますか？") && call("/api/garapon/admin/reset", { keepEntries: false });
+  if ($("#key").value) call("/api/garapon/admin/state").catch(() => {});
 </script>
 </body>
 </html>

@@ -205,8 +205,8 @@ async function boot() {
     if (liff.isLoggedIn()) app.token = liff.getAccessToken();
   }
 
-  await api("/api/board", { auth: false });
-  if (app.token) await api("/api/me");
+  await api("/api/garapon/board", { auth: false });
+  if (app.token) await api("/api/garapon/me");
   route();
 
   if (sessionStorage.getItem("pending-entry") && app.token && !app.me) {
@@ -229,7 +229,7 @@ function route() {
 async function poll() {
   if (document.hidden || $("#s-spin").classList.contains("is-active")) return;
   try {
-    await api("/api/board", { auth: false });
+    await api("/api/garapon/board", { auth: false });
   } catch {}
 }
 
@@ -262,7 +262,7 @@ async function doEntry() {
   const btn = $("#btn-entry");
   btn.disabled = true;
   try {
-    await api("/api/entry", { method: "POST" });
+    await api("/api/garapon/entry", { method: "POST" });
     sfx.stamp();
     showEntered();
   } catch (e) {
@@ -452,7 +452,7 @@ async function startDraw() {
 
   const dir = Math.sign(g.vel) || 1;
   // サーバーの抽選結果を待つ間も勢いよく回す
-  const request = api("/api/spin", { method: "POST" }).catch((e) => e);
+  const request = api("/api/garapon/spin", { method: "POST" }).catch((e) => e);
   const spinUntil = performance.now() + 1500;
   sfx.drumroll(3.6);
   await new Promise((resolve) => {
@@ -594,7 +594,7 @@ function showResult(fresh) {
 }
 
 async function shareResult() {
-  const url = `https://liff.line.me/${app.liffId}`;
+  const url = `https://liff.line.me/${app.liffId}/garapon/`;
   try {
     await liff.shareTargetPicker([
       {

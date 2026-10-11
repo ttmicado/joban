@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { enter, initialState, spin, stats } from "../src/lottery.js";
+import { enter, initialState, spin, stats } from "../src/garapon/lottery.js";
 
 const join = (state, n) => {
   for (let i = 0; i < n; i++) enter(state, { userId: `u${i}`, displayName: `user${i}` });

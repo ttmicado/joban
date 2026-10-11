@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#1b0d2b" />
+  <title>宿泊券ガラポン</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ccircle cx=%2250%22 cy=%2250%22 r=%2240%22 fill=%22%23f6c445%22/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=M+PLUS+Rounded+1c:wght@400;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+</head>
+<body>
+  <div class="sky" aria-hidden="true">
+    <span class="lantern l1"></span><span class="lantern l2"></span><span class="lantern l3"></span>
+    <span class="lantern l4"></span><span class="lantern l5"></span>
+  </div>
+  <canvas id="confetti" aria-hidden="true"></canvas>
+
+  <main id="app">
+    <!-- 読み込み中 -->
+    <section class="screen is-active" id="s-loading">
+      <div class="loader"><div class="loader-ball"></div></div>
+      <p class="muted">抽選会場を準備中…</p>
+    </section>
+
+    <!-- イントロ -->
+    <section class="screen" id="s-intro">
+      <header class="banner">
+        <p class="banner-sub">LINEグループ限定</p>
+        <h1 class="banner-title"><span>福引き</span><span>大抽選会</span></h1>
+      </header>
+
+      <div class="prize">
+        <div class="prize-rays" aria-hidden="true"></div>
+        <div class="prize-ticket" data-bind="prizeName">宿泊券</div>
+        <div class="prize-count">
+          <span class="prize-x">×</span><span class="prize-n" data-bind="prizes">2</span><span class="prize-u">名様</span>
+        </div>
+      </div>
+
+      <div class="odds">
+        <div class="odds-balls" id="intro-balls" aria-hidden="true"></div>
+        <p class="odds-text"><b data-bind="total">19</b>個の玉に、<b class="gold-text">金の玉</b>が<b data-bind="goldRemaining">2</b>個。</p>
+      </div>
+
+      <div class="crowd" id="intro-crowd"></div>
+
+      <div class="cta-wrap">
+        <button class="btn btn-line btn-pulse" id="btn-entry">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3C6.5 3 2 6.6 2 11c0 3.9 3.5 7.2 8.3 7.9.3.1.8.2.9.5.1.3.1.7 0 1l-.1.8c0 .3-.2 1 .9.5 1.1-.5 6-3.5 8.2-6.1 1.5-1.6 2.2-3.2 2.2-5C22 6.6 17.5 3 12 3z"/></svg>
+          <span>LINEでエントリーする</span>
+        </button>
+        <p class="fine">LINEの表示名とアイコンを、本人確認と結果表示に使います</p>
+      </div>
+      <p class="notice" id="intro-notice" hidden></p>
+    </section>
+
+    <!-- エントリー完了 -->
+    <section class="screen" id="s-entered">
+      <p class="eyebrow">エントリー完了！</p>
+      <div class="entry-ticket" id="entry-ticket">
+        <div class="et-left">
+          <p class="et-label">ENTRY</p>
+          <p class="et-no">No.<span id="et-no">01</span></p>
+        </div>
+        <div class="et-right">
+          <div class="avatar avatar-lg" id="et-avatar"></div>
+          <p class="et-name" id="et-name"></p>
+        </div>
+        <div class="et-stamp" aria-hidden="true">受付済</div>
+      </div>
+      <p class="lead">チャンスは<b>1回だけ</b>。<br />心の準備はいい？</p>
+      <button class="btn btn-gold btn-pulse" id="btn-go-spin">ガラポンの前へ進む</button>
+    </section>
+
+    <!-- ガラポン -->
+    <section class="screen" id="s-spin">
+      <div class="spin-head">
+        <div class="gold-left">
+          <span>のこり金玉</span>
+          <span class="gold-dots" id="spin-gold"></span>
+        </div>
+        <p class="spin-msg" id="spin-msg">ハンドルをつかんで、ぐるぐる回そう！</p>
+      </div>
+
+      <div class="garapon-wrap" id="garapon-wrap">
+        <svg id="garapon" viewBox="0 0 320 350" role="img" aria-label="ガラポン抽選器">
+          <defs>
+            <radialGradient id="g-red" cx="40%" cy="35%" r="75%">
+              <stop offset="0" stop-color="#ff6b6b" />
+              <stop offset=".55" stop-color="#d7263d" />
+              <stop offset="1" stop-color="#8f1023" />
+            </radialGradient>
+            <linearGradient id="g-gold" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#fff1b0" />
+              <stop offset=".45" stop-color="#f6c445" />
+              <stop offset="1" stop-color="#b57d12" />
+            </linearGradient>
+            <linearGradient id="g-wood" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#a8673a" />
+              <stop offset="1" stop-color="#6b3a1c" />
+            </linearGradient>
+            <radialGradient id="g-ball-gold" cx="35%" cy="30%" r="70%">
+              <stop offset="0" stop-color="#fffbe0" />
+              <stop offset=".35" stop-color="#ffd84d" />
+              <stop offset="1" stop-color="#b8820b" />
+            </radialGradient>
+            <radialGradient id="g-ball-white" cx="35%" cy="30%" r="70%">
+              <stop offset="0" stop-color="#ffffff" />
+              <stop offset=".6" stop-color="#eeeae4" />
+              <stop offset="1" stop-color="#a9a39b" />
+            </radialGradient>
+            <filter id="f-shadow" x="-20%" y="-20%" width="140%" height="140%">
+              <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#000" flood-opacity=".45" />
+            </filter>
+          </defs>
+
+          <circle id="progress-track" cx="160" cy="150" r="132" />
+          <circle id="progress-bar" cx="160" cy="150" r="132" pathLength="100" />
+
+          <!-- 台 -->
+          <g class="stand">
+            <path d="M160 150 L82 300 L102 300 L160 178 L218 300 L238 300 Z" fill="url(#g-wood)" />
+            <rect x="46" y="296" width="228" height="16" rx="8" fill="url(#g-wood)" />
+            <path d="M92 318 Q160 340 228 318 L236 304 Q160 322 84 304 Z" fill="url(#g-gold)" />
+            <ellipse cx="160" cy="306" rx="70" ry="9" fill="#5a0e1a" />
+          </g>
+
+          <g id="drum-shake">
+            <g id="drum" filter="url(#f-shadow)">
+              <g id="drum-faces"></g>
+              <g id="drum-handle">
+                <rect x="154" y="62" width="12" height="90" rx="6" fill="url(#g-gold)" />
+                <circle cx="160" cy="62" r="17" fill="#fff4dc" stroke="#b57d12" stroke-width="3" />
+                <circle cx="155" cy="57" r="5" fill="#fff" opacity=".8" />
+              </g>
+              <circle cx="160" cy="150" r="20" fill="url(#g-gold)" stroke="#8a5a08" stroke-width="2" />
+              <circle cx="160" cy="150" r="7" fill="#8a5a08" />
+            </g>
+          </g>
+
+          <circle id="ball" cx="160" cy="250" r="13" opacity="0" />
+        </svg>
+        <div class="grab-hint" id="grab-hint" aria-hidden="true">
+          <span class="hand">👆</span>
+        </div>
+      </div>
+
+      <div class="spin-foot">
+        <div class="meter"><div class="meter-fill" id="meter-fill"></div></div>
+        <button class="btn btn-ghost btn-sm" id="btn-auto">うまく回せない人はこちら（自動で回す）</button>
+      </div>
+    </section>
+
+    <!-- 結果 -->
+    <section class="screen" id="s-result">
+      <div class="result result-win" id="result-win" hidden>
+        <div class="win-rays" aria-hidden="true"></div>
+        <p class="win-kicker">おめでとうございます！</p>
+        <h2 class="win-title">大当たり<span>!!</span></h2>
+        <div class="big-ball big-ball-gold"><span>当</span></div>
+        <div class="win-ticket">
+          <p class="wt-label">PRIZE</p>
+          <p class="wt-name" data-bind="prizeName">宿泊券</p>
+          <p class="wt-holder"><span id="win-name"></span> さん</p>
+        </div>
+        <p class="lead small">受け取り方法は幹事さんから連絡があります</p>
+      </div>
+
+      <div class="result result-lose" id="result-lose" hidden>
+        <p class="lose-kicker">結果は…</p>
+        <div class="big-ball big-ball-white"><span>残</span></div>
+        <h2 class="lose-title">ざんねん、ハズレ…</h2>
+        <p class="lead" id="lose-msg"></p>
+      </div>
+
+      <div class="result-actions">
+        <button class="btn btn-line" id="btn-share" hidden>グループに結果を報告する</button>
+        <button class="btn btn-ghost" id="btn-board-2">みんなの結果を見る</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- みんなの結果ボタン -->
+  <button class="board-fab" id="btn-board" hidden>
+    <span class="fab-dot"></span><span>みんなの結果</span>
+  </button>
+
+  <!-- ボトムシート -->
+  <div class="sheet" id="sheet" aria-hidden="true">
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet-panel" role="dialog" aria-label="みんなの結果">
+      <div class="sheet-grip" data-close></div>
+      <h3 class="sheet-title">みんなの結果</h3>
+      <p class="sheet-sub" id="sheet-sub"></p>
+      <ul class="board" id="board"></ul>
+      <button class="btn btn-ghost btn-sm" data-close>閉じる</button>
+    </div>
+  </div>
+
+  <!-- ズームする玉の演出 -->
+  <div class="reveal" id="reveal" aria-hidden="true">
+    <div class="reveal-flash"></div>
+    <div class="reveal-ball"></div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
