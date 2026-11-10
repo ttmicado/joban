@@ -198,6 +198,10 @@ export async function applyImport(c, slug, data) {
     if (k && !byName.has(k)) byName.set(k, m);
   }
 
+  // 対応表が指すメンバーが消えている（LINE 紐付け時の統合などで）場合、取り込み済みの試合成績から
+  // 統合先を推定して直す。推定できなければ従来どおり名前で探す（それでも無ければ新規作成）
+  await repairStaleMembers(db, map, byId, data, newMaps);
+
   const stats = { created: 0, linked: 0, updated: 0, unchanged: 0, departed: 0 };
   const playerList = [];
   const memberIdOf = new Map(); // normName → members.id
@@ -439,6 +443,45 @@ export async function applyImport(c, slug, data) {
     gameList: gameList.sort((a, b) => (a.date === b.date ? Number(b.sourceId) - Number(a.sourceId) : a.date < b.date ? 1 : -1)),
     warnings,
   };
+}
+
+async function repairStaleMembers(db, map, byId, data, newMaps) {
+  const stale = [...map.member].filter(([, id]) => !byId.has(id)).map(([k]) => k);
+  if (!stale.length) return;
+  const namesOf = (g) => new Set([...g.batting, ...g.pitching].map((r) => normName(r.name)).filter(Boolean));
+  const rowsCache = new Map();
+  const idsInGame = async (gameId) => {
+    if (!rowsCache.has(gameId)) {
+      const rows = await db.all(
+        "SELECT member_id FROM batting WHERE game_id = ? UNION SELECT member_id FROM pitching WHERE game_id = ?",
+        gameId,
+        gameId,
+      );
+      rowsCache.set(gameId, new Set(rows.map((r) => r.member_id)));
+    }
+    return rowsCache.get(gameId);
+  };
+  for (const key of stale) {
+    let cand = null;
+    for (const g of data.games) {
+      const names = namesOf(g);
+      if (!names.has(key)) continue;
+      const gameId = map.game.get(String(g.sourceId));
+      if (!gameId) continue;
+      // この試合のほかの選手（対応表が有効な人）を除いた残りが候補
+      const others = new Set([...names].filter((n) => n !== key).map((n) => map.member.get(n)).filter((id) => byId.has(id)));
+      const here = new Set([...(await idsInGame(gameId))].filter((id) => !others.has(id) && byId.has(id)));
+      cand = cand ? new Set([...cand].filter((id) => here.has(id))) : here;
+      if (cand.size <= 1) break;
+    }
+    if (cand && cand.size === 1) {
+      const [id] = cand;
+      map.member.set(key, id);
+      newMaps.push(["member", key, id]);
+    } else {
+      map.member.delete(key);
+    }
+  }
 }
 
 async function insertRowsMap(db, source, rows) {

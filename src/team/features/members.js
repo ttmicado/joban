@@ -136,6 +136,10 @@ export async function mergeMembers(db, fromId, intoId, { useName = false } = {})
   if (!into.title && from.title) f.title = from.title;
   if (useName) f.name = from.name;
   if (from.active && !into.active) f.active = 1;
+  // teams.one などの取り込みの対応表も統合先に付け替える（取り込み直しで二重登録しないため）
+  if (await tableExists(db, "import_map")) {
+    await db.run("UPDATE import_map SET local_id = ? WHERE kind = 'member' AND local_id = ?", into.id, from.id);
+  }
   // LINE 連携を移す（一意制約があるので fromId を消してから）
   await db.run("DELETE FROM members WHERE id = ?", from.id);
   if (from.line_user_id) {

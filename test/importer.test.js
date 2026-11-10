@@ -440,3 +440,30 @@ test("api: 役職は members.title に入れる（空欄のときだけ。role �
   assert.equal((await row("河村 誠貴")).title, "主将");
   assert.equal(parsePlayers(read("player.html")).players.find((p) => p.name === "河村　誠貴").title, "キャプテン / GM");
 });
+
+test("api: LINE 紐付けで統合した後に取り込み直しても二重登録しない（統合前・旧データの両方）", async () => {
+  const f = stubFetch();
+  try {
+    const t = makeTeam();
+    const admin = await t.join("監督");
+    const me = await t.join("たしろ"); // teams.one とは違う名前で参加した人
+    assert.equal((await admin.post("/import/teamsone", { slug: "joban-bulldogs" })).status, 200);
+    const tashiro = await t.db.one("SELECT id FROM members WHERE regexp_replace(name, '\\s', '', 'g') = '田代貴彦'");
+    const before = await count(t, "batting", `WHERE member_id = ${tashiro.id}`);
+    assert.ok(before > 0);
+    assert.equal((await me.post("/me/merge", { memberId: tashiro.id })).status, 200);
+    const members1 = await count(t, "members");
+    // 1) 新しい統合処理: 対応表が付け替わっているので重複しない
+    assert.equal((await admin.post("/import/teamsone", { slug: "joban-bulldogs" })).status, 200);
+    assert.equal(await count(t, "members"), members1);
+    assert.equal(await count(t, "batting", `WHERE member_id = ${me.member.id}`), before);
+    // 2) 対応表が古いまま（統合前の版で統合した場合）でも、試合成績から推定して重複しない
+    await t.db.run("UPDATE import_map SET local_id = 999999 WHERE kind = 'member' AND local_id = ?", me.member.id);
+    assert.equal((await admin.post("/import/teamsone", { slug: "joban-bulldogs" })).status, 200);
+    assert.equal(await count(t, "members"), members1);
+    assert.equal(await count(t, "batting", `WHERE member_id = ${me.member.id}`), before);
+    assert.equal((await t.db.one("SELECT local_id FROM import_map WHERE kind = 'member' AND source_id = '田代貴彦'")).local_id, me.member.id);
+  } finally {
+    f.restore();
+  }
+});
